@@ -603,7 +603,7 @@ class PBStartupRefreshTests(unittest.TestCase):
             self.assertIsInstance(call.args[0], ast.Name)
             self.assertEqual(call.args[0].id, "message")
         boards = [node for node in ast.walk(ready) if isinstance(node, ast.Call)
-                  and isinstance(node.func, ast.Name) and node.func.id == "write_public_board"]
+                  and isinstance(node.func, ast.Name) and node.func.id == "write_linked_board"]
         self.assertEqual(len(boards), 1)
         self.assertTrue(any(kw.arg == "message" and isinstance(kw.value, ast.Name)
                             and kw.value.id == "message" for kw in boards[0].keywords))

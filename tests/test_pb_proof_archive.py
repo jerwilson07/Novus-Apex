@@ -126,76 +126,115 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(proof, text)
         self.assertIn("https://example.com/proof.png", bot.short_record(record(), 0))
 
-    async def test_archived_proof_buttons_fit_populated_boards(self):
-        ref = "archive:" + "a" * 32 + ".png"
+    async def test_full_raid_board_uses_inline_links_with_no_proof_controls(self):
         activity = "Chambers of Xeric"
-        board = bot.RaidLeaderboard(activity, [
-            (variant, [record(id=n, activity=activity, variant=variant, proof=ref)])
-            for n, variant in enumerate(bot.RAIDS[activity], 1)
-        ])
+        ref = "archive:" + "a" * 32 + ".png"
+        with patch.dict(bot.PUBLIC_PROOF_URLS, {ref: FRESH}, clear=True):
+            board = bot.RaidLeaderboard(activity, [
+                (variant, [record(id=5*n+rank+1, activity=activity, variant=variant, proof=ref)
+                           for rank in range(5)])
+                for n, variant in enumerate(bot.RAIDS[activity])
+            ])
         self.assertLessEqual(board.total_children_count, 40)
-        menus = [item for item in board.walk_children() if isinstance(item, bot.BoardProofSelect)]
-        self.assertEqual(len(menus), 1)
-        self.assertEqual(menus[0].item.options[0].label, "Solo · #1 · 14:32.60")
+        text = "\n".join(item.content for item in board.walk_children() if isinstance(item, bot.ui.TextDisplay))
+        self.assertEqual(text.count(f"[Proof]({FRESH})"), 40)
+        self.assertFalse(any(isinstance(item, (bot.ui.Thumbnail, bot.ui.MediaGallery,
+                                              bot.ProofButton, bot.BoardProofSelect))
+                             for item in board.walk_children()))
         self.assertTrue(board.is_persistent())
-        badge = bot.ProofButton(8)
-        self.assertEqual(badge.custom_id, "pb:proof:view:8")
-        with patch.object(bot, "show_record_proof", new=AsyncMock()) as show:
-            await badge.callback("interaction")
-            show.assert_awaited_once_with("interaction", 8)
 
-    async def test_araxxor_proof_buttons_target_each_record_without_typing(self):
-        ref = "archive:" + "b" * 32 + ".png"
-        rows = [record(id=sid, proof=ref, ms=ms) for sid, ms in ((14, 43800), (11, 46200), (67, 51800))]
-        board = bot.BossLeaderboard("Araxxor", [("Standard", rows)])
-        buttons = list(board.children[-1].children)
-        self.assertEqual([button.item.label for button in buttons],
-                         ["Proof #1 · 0:43.80", "Proof #2 · 0:46.20", "Proof #3 · 0:51.80"])
-        self.assertEqual([button.sid for button in buttons], [14, 11, 67])
-        self.assertNotIn("/pbviewproof", str(board.to_components()))
-
-    async def test_araxxor_shows_three_full_image_thumbnails_without_buttons(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(bot, "DBPATH", str(Path(tmp) / "pb.sqlite3")):
+    async def test_araxxor_uploads_once_then_rotates_inline_links_in_place(self):
+        with (tempfile.TemporaryDirectory() as tmp,
+              patch.object(bot, "DBPATH", str(Path(tmp) / "pb.sqlite3")),
+              patch.dict(bot.PUBLIC_PROOF_URLS, clear=True)):
             rows = []
-            for sid, ms in ((14, 43800), (11, 46200), (67, 51800)):
+            for sid, ms in ((14, 43800), (11, 46200), (67, 51800), (999, 20000)):
                 ref = f"archive:{sid:032x}.png"
                 path = archive.archive_path(bot.DBPATH, ref)
                 path.parent.mkdir(exist_ok=True)
                 path.write_bytes(DATA)
-                rows.append(record(id=sid, proof=ref, ms=ms, activity="Araxxor"))
+                rows.append(record(id=sid, proof=ref, ms=ms, activity="Araxxor",
+                                   status="pending" if sid == 999 else "approved",
+                                   category="Bosses", variant="Standard", member_ids=str(sid), members="Test"))
             blocks = [("Standard", rows)]
-            channel = SimpleNamespace(guild=SimpleNamespace(filesize_limit=1024))
-            message = SimpleNamespace(attachments=[], edit=AsyncMock())
+            message = SimpleNamespace(id=42, attachments=[])
+            edits = []
+
+            def attachment(sid, nonce):
+                filename = f"pb-{sid}-{sid:032x}.png"
+                return SimpleNamespace(filename=filename, url=
+                    f"https://cdn.discordapp.com/attachments/123/{sid}/{filename}?ex=ffffffff&hm={nonce}")
+
+            async def edit(**args):
+                edits.append(args)
+                message.attachments = [
+                    attachment(int(file.filename.split("-")[1]), "initial")
+                    if isinstance(file, bot.discord.File) else file
+                    for file in args.get("attachments", [])
+                ]
+                return message
+
+            message.edit = AsyncMock(side_effect=edit)
+            channel = SimpleNamespace(guild=SimpleNamespace(filesize_limit=1024),
+                                      send=AsyncMock(), fetch_message=AsyncMock(return_value=message))
             with patch.object(bot.BossLeaderboard, "blocks", new=AsyncMock(return_value=blocks)):
-                await bot.write_public_board(channel, 123, "Araxxor", message=message)
-                call = message.edit.await_args.kwargs
-                view = call["view"]
-                files = call["attachments"]
-                self.assertEqual(len(files), 3)
-                native = [item for item in view.walk_children() if isinstance(item, bot.ui.Thumbnail)]
-                self.assertEqual([item.media.url for item in native],
-                                 [f"attachment://{file.filename}" for file in files])
-                self.assertEqual([item.description for item in native],
-                                 ["View proof for rank 1, 0:43.80", "View proof for rank 2, 0:46.20",
-                                  "View proof for rank 3, 0:51.80"])
-                self.assertFalse(any(isinstance(item, (bot.ProofButton, bot.BoardProofSelect))
+                await bot.write_linked_board(channel, 123, "Araxxor", message=message)
+                self.assertEqual(len(edits), 2)
+                self.assertEqual([file.filename for file in edits[0]["attachments"]],
+                                 [attachment(sid, "initial").filename for sid in (14, 11, 67)])
+                view = edits[-1]["view"]
+                text = "\n".join(item.content for item in view.walk_children() if isinstance(item, bot.ui.TextDisplay))
+                for sid in (14, 11, 67):
+                    self.assertIn(f"<@{sid}> · [Proof]({attachment(sid, 'initial').url})", text)
+                self.assertNotIn("/pbviewproof", text)
+                self.assertFalse(any(isinstance(item, (bot.ui.Thumbnail, bot.ui.MediaGallery,
+                                                      bot.ProofButton, bot.BoardProofSelect))
                                      for item in view.walk_children()))
-                existing = [SimpleNamespace(filename=file.filename) for file in files]
-                message.attachments = existing
-                await bot.write_public_board(channel, 123, "Araxxor", message=message)
-                self.assertEqual(message.edit.await_args.kwargs["attachments"], existing)
+
+                refreshed = [attachment(sid, "fresh") for sid in (14, 11, 67)]
+                message.attachments = refreshed
+                await bot.write_linked_board(channel, 123, "Araxxor", 42, archived_only=True)
+                self.assertEqual(len(edits), 3)
+                channel.fetch_message.assert_awaited_once_with(42)
+                channel.send.assert_not_awaited()
+                self.assertEqual(edits[-1]["attachments"], refreshed)
+                updated = str(edits[-1]["view"].to_components())
+                self.assertIn("&hm=fresh", updated)
+                self.assertNotIn("&hm=initial", updated)
+
+    def test_refreshes_signatures_before_expiration(self):
+        at = 100_000
+        margin = 2 * bot.PROOF_LINK_REFRESH_SECONDS
+        self.assertTrue(bot.proof_link_needs_refresh(URL, at))
+        self.assertTrue(bot.proof_link_needs_refresh(URL.replace("ex=1", f"ex={at+margin:x}"), at))
+        self.assertFalse(bot.proof_link_needs_refresh(URL.replace("ex=1", f"ex={at+margin+1:x}"), at))
+
+    async def test_oversized_raid_keeps_all_records_and_champion_proofs(self):
+        activity = "Chambers of Xeric"
+        ref = "archive:" + "a" * 32 + ".png"
+        url = FRESH + "a" * 150
+        blocks = [
+            (variant, [record(id=5*n+rank+1, activity=activity, variant=variant, proof=ref, ms=1000*(rank+1))
+                       for rank in range(5)])
+            for n, variant in enumerate(bot.RAIDS[activity])
+        ]
+        with patch.dict(bot.PUBLIC_PROOF_URLS, {ref: url}, clear=True):
+            view = bot.linked_board_view(bot.RaidLeaderboard, activity, blocks)
+        text = "\n".join(item.content for item in view.walk_children() if isinstance(item, bot.ui.TextDisplay))
+        self.assertLessEqual(len(text.encode("utf-16-le")) // 2, 4050)
+        self.assertEqual(text.count("0:05.00"), len(blocks))
+        self.assertGreaterEqual(text.count(f"[Proof]({url})"), len(blocks))
+        self.assertNotIn("Empty", text)
 
     async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
         ref = "archive:" + "c" * 32 + ".png"
         activity = "Chambers of Xeric"
         variants = bot.RAIDS[activity]
-        board = bot.RaidLeaderboard(activity, [
+        menus = [row.children[0] for row in bot.board_proof_rows([
             (variant, [record(id=5*n+rank+1, activity=activity, variant=variant, proof=ref)
                        for rank in range(5)])
             for n, variant in enumerate(variants)
-        ])
-        self.assertLessEqual(board.total_children_count, 40)
-        menus = [item for item in board.walk_children() if isinstance(item, bot.BoardProofSelect)]
+        ])]
         self.assertEqual([len(menu.item.options) for menu in menus], [25, 15])
         original = menus[1]
         match = original.template.fullmatch(original.custom_id)

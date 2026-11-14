@@ -1,7 +1,7 @@
 import os, re, asyncio, logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import aiohttp, discord, aiosqlite
 from discord import app_commands, ui
 from discord.ext import commands
@@ -154,19 +154,42 @@ def unique_team_results(results,limit=5):
    break
  return unique
 
-def proof_text(r,label="↗ Proof"):
+PUBLIC_PROOF_URLS={}
+PUBLIC_PROOF_LOCK=asyncio.Lock()
+PROOF_LINK_REFRESH_SECONDS=3*60*60
+BOARD_ATTACHMENT_BUDGET=20*1024*1024
+
+def proof_text(r,label="Proof",*,omit=()):
+ if r["id"] in omit:
+  return ""
  proof=r["proof"]
  if is_private_proof(proof):
-  return ""
+  proof=PUBLIC_PROOF_URLS.get(proof,"")
  return f"[{label}]({proof})" if proof and valid_url(proof) else ""
 
-def short_record(r,rank,include_variant=False):
+def players_with_proof(r,*,omit=()):
+ evidence=proof_text(r,omit=omit)
+ return public_members(r)+(f" · {evidence}" if evidence else "")
+
+def cache_public_attachment(ref,attachment):
+ if discord_attachment_key(attachment.url):
+  PUBLIC_PROOF_URLS[ref]=attachment.url
+  return True
+ return False
+
+def proof_link_needs_refresh(url,at):
+ if not url:
+  return True
+ try:
+  return int(parse_qs(urlparse(url).query)["ex"][0],16)<=at+2*PROOF_LINK_REFRESH_SECONDS
+ except (KeyError,ValueError,IndexError):
+  return True
+
+def short_record(r,rank,include_variant=False,*,omit=()):
  lines=[f"{MEDALS[rank]} **{fmt(r['ms'])}**"]
  if include_variant:
   lines.append(f"**{clean(r['variant'])}**")
- lines.append(public_members(r))
- if evidence:=proof_text(r):
-  lines.append(evidence)
+ lines.append(players_with_proof(r,omit=omit))
  if rank==0:
   lines.append(f"-# Achieved {pb_date_label(r['pb_date'])}")
  return "\n".join(lines)
@@ -476,6 +499,13 @@ class PB(commands.Bot):
    self.tree.copy_global_to(guild=guild)
    await self.tree.sync(guild=guild)
   else:await self.tree.sync()
+
+ async def close(self):
+  task=getattr(self,"_proof_links_task",None)
+  if task:
+   task.cancel()
+   await asyncio.gather(task,return_exceptions=True)
+  await super().close()
 bot=PB(command_prefix=commands.when_mentioned,intents=intents)
 
 async def calculate_pb_points(g):
@@ -702,21 +732,27 @@ async def on_ready():
     await paced_startup_edit(message, content=f"## [↑ CLICK TO SCROLL TO THE TOP]({url})",allowed_mentions=discord.AllowedMentions.none())
    except discord.HTTPException:
     logging.exception("Failed to refresh PB scroll-to-top footer")
-  priority={"Araxxor":0,"Royal Titans":1}
+  priority={"Inferno":0,"Araxxor":1,"Royal Titans":2}
   for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
    if activity not in BOSSES and activity not in RAIDS:continue
    try:
     ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
     message=await ch.fetch_message(record["message"])
-    await write_public_board(ch,guild.id,activity,message=message)
+    saved=await write_linked_board(ch,guild.id,activity,message=message)
     await asyncio.sleep(1.4)
-    if activity=="Araxxor":
-     saved=await ch.fetch_message(message.id)
-     saved_view=ui.LayoutView.from_message(saved)
-     thumbnails=sum(isinstance(item,ui.Thumbnail) for item in saved_view.walk_children())
-     logging.info("Verified Araxxor board %s: native proof thumbnails=%s attached files=%s",
-                  message.id,thumbnails,len(saved.attachments))
+    if activity in ("Inferno","Araxxor"):
+     body=old_announcement_text(saved)
+     view=ui.LayoutView.from_message(saved)
+     controls=sum((getattr(item,"custom_id",None) or "").startswith("pb:proof:")
+                  for item in view.walk_children())
+     thumbnails=sum(isinstance(item,ui.Thumbnail) for item in view.walk_children())
+     hosted={discord_attachment_key(a.url) for a in saved.attachments}
+     urls=[url for url in re.findall(r"\[Proof\]\((https://[^\s)]+)\)",body)
+           if discord_attachment_key(url) in hosted]
+     reachable=await count_reachable_proof_images(urls)
+     logging.info("Verified %s PB board %s: inline proof links=%s proof controls=%s thumbnails=%s reachable images=%s/%s",
+                  activity,message.id,body.count("[Proof]("),controls,thumbnails,reachable,len(urls))
     if activity in SHARED_SIZE_RAIDS:
      logging.info("Refreshed raid team-size brackets for %s on Discord message %s",activity,message.id)
     if guild.id==NOVUS_GUILD_ID and activity=="Royal Titans":
@@ -724,7 +760,10 @@ async def on_ready():
    except discord.HTTPException:
     logging.exception("Failed to refresh PB icon for %s",activity)
   await refresh_proof_snapshot(guild.id)
-  logging.info("Finished PB leaderboard proof refresh for guild %s",guild.id)
+  logging.info("Finished refreshing inline proof links for guild %s",guild.id)
+
+ if not getattr(bot,"_proof_links_task",None):
+  bot._proof_links_task=asyncio.create_task(refresh_live_proof_links())
 
  # Update the tracked message in place after the animated asset deploys.
  # Do not delete/repost the board or alter its other panels.
@@ -874,22 +913,15 @@ class SnapshotPanel(ui.LayoutView):
     recent_text=(
      f"**{clean(activity)} · {clean(r['variant'])}**\n"
      f"**{fmt(r['ms'])}**\n"
-     f"{public_members(r)}\n"
+     f"{players_with_proof(r)}\n"
      f"-# Achieved {pb_date_label(r['pb_date'])}"
     )
-    if evidence:=proof_text(r):
-     recent_text+=f"\n{evidence}"
     recent_panel.add_item(ui.TextDisplay(recent_text))
     if idx!=len(recent)-1:
      recent_panel.add_item(ui.Separator())
 
   self.add_item(records)
   self.add_item(recent_panel)
-  for row in board_proof_rows([
-   *((activity,results) for activity,results in raid_leaders.items()),
-   ("Recent",recent),
-  ],force_menu=True):
-   self.add_item(row)
 
  @classmethod
  async def make(cls,g):
@@ -967,7 +999,7 @@ class BossDirectory(ui.LayoutView):
 
 
 
-def add_featured_ranking(panel, results, *, compact=False):
+def add_featured_ranking(panel, results, *, compact=False, omit=()):
  # Display one featured champion and keep the remaining places easy to scan.
  # No custom fonts or image cards: everything is native Discord Components V2.
  if not results:
@@ -979,11 +1011,9 @@ def add_featured_ranking(panel, results, *, compact=False):
  champion=results[0]
  champion_text=(
   f"## {MEDALS[0]} {fmt(champion['ms'])}\n"
-  f"{public_members(champion)}\n"
+  f"{players_with_proof(champion,omit=omit)}\n"
   f"-# Achieved {pb_date_label(champion['pb_date'])}"
  )
- if evidence:=proof_text(champion):
-  champion_text+=f"\n{evidence}"
  if not compact:
   panel.add_item(ui.Section(
    ui.TextDisplay(champion_text),
@@ -1001,7 +1031,7 @@ def add_featured_ranking(panel, results, *, compact=False):
    remaining.append(f"{MEDALS[rank]} Empty")
    continue
   r=results[rank]
-  evidence=proof_text(r,"Proof")
+  evidence=proof_text(r,omit=omit)
   proof=f" · {evidence}" if evidence else ""
   remaining.append(
    f"{MEDALS[rank]} **{fmt(r['ms'])}** · {public_members(r)}{proof}"
@@ -1014,56 +1044,11 @@ def add_featured_ranking(panel, results, *, compact=False):
   panel.add_item(ui.TextDisplay("\n".join(remaining)))
 
 
-def inline_rank_rows(results, previews, *, show_champion=True):
- """Group plain rows but put each archived screenshot beside its own time."""
- if not results:
-  return [ui.TextDisplay("-# Be the first to claim this record!")]
- rows=[]
- plain=[]
-
- def flush():
-  if plain:
-   rows.append(ui.TextDisplay("\n".join(plain)))
-   plain.clear()
-
- for rank in range(5):
-  if rank>=len(results):
-   plain.append(f"{MEDALS[rank]} Empty")
-   continue
-  r=results[rank]
-  if rank==0 and show_champion:
-   label=f"## {MEDALS[0]} {fmt(r['ms'])}\n{public_members(r)}\n-# Achieved {pb_date_label(r['pb_date'])}"
-   if evidence:=proof_text(r):
-    label+=f"\n{evidence}"
-   if r["id"] in previews:
-    label+="\n-# NOVUS #1"
-  else:
-   label=f"{MEDALS[rank]} **{fmt(r['ms'])}** · {public_members(r)}"
-   if evidence:=proof_text(r,"Proof"):
-    label+=f" · {evidence}"
-  if media:=previews.get(r["id"]):
-   flush()
-   rows.append(ui.Section(ui.TextDisplay(label),accessory=ui.Thumbnail(
-    media,description=f"View proof for rank {rank+1}, {fmt(r['ms'])}",
-   )))
-  elif rank==0 and show_champion:
-   flush()
-   rows.append(ui.Section(ui.TextDisplay(label),accessory=ui.Button(
-    label="NOVUS #1",style=discord.ButtonStyle.success,disabled=True,
-    custom_id=f"pb:leader:first:{r['id']}",
-   )))
-  else:
-   plain.append(label)
- flush()
- return rows
-
-
-def board_proof_rows(blocks,*,force_menu=False,exclude=None):
+def board_proof_rows(blocks,*,force_menu=False):
  options={}
- exclude=exclude or {}
  for variant,results in blocks:
   for rank,r in enumerate(results,1):
-   if r["id"] not in exclude and is_private_proof(r["proof"]):
+   if is_private_proof(r["proof"]) and not proof_text(r):
     title=r["activity"] if variant=="Recent" else variant
     options.setdefault(r["id"],(title,rank,fmt(r["ms"])))
  if not options:
@@ -1080,9 +1065,8 @@ def board_proof_rows(blocks,*,force_menu=False,exclude=None):
 
 
 class BossLeaderboard(ui.LayoutView):
- def __init__(self,activity,blocks,previews=None):
+ def __init__(self,activity,blocks):
   super().__init__(timeout=None)
-  previews=previews or {}
 
   accent=RED if activity in ("Inferno","Fortis Colosseum","Fight Caves") else BLUE
   # Keep the boss title and PBs in one native Discord container.
@@ -1093,29 +1077,13 @@ class BossLeaderboard(ui.LayoutView):
   ))
 
   for index,(variant,results) in enumerate(blocks):
-   if previews and len(blocks)>1:
-    if index==0:
-     self.add_item(panel)
-    panel=ui.Container(accent_colour=accent)
-    panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-    for row in inline_rank_rows(results,previews):
-     panel.add_item(row)
-    self.add_item(panel)
-    continue
    if index:
     panel.add_item(ui.Separator())
    if len(blocks)>1:
     panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   if previews:
-    for row in inline_rank_rows(results,previews):
-     panel.add_item(row)
-   else:
-    add_featured_ranking(panel,results)
+   add_featured_ranking(panel,results)
 
-  if not previews or len(blocks)<=1:
-   self.add_item(panel)
-  for row in board_proof_rows(blocks,exclude=previews):
-   self.add_item(row)
+  self.add_item(panel)
 
  @classmethod
  async def blocks(cls,g,activity):
@@ -1138,9 +1106,8 @@ class BossLeaderboard(ui.LayoutView):
 
 
 class RaidLeaderboard(ui.LayoutView):
- def __init__(self,activity,blocks,previews=None):
+ def __init__(self,activity,blocks,*,omit=()):
   super().__init__(timeout=None)
-  previews=previews or {}
 
   heading=ui.Container(accent_colour=GOLD)
   heading.add_item(ui.TextDisplay(
@@ -1150,29 +1117,13 @@ class RaidLeaderboard(ui.LayoutView):
 
   # The title uses 2 components and a populated featured bracket uses 7.
   # Keep every bracket on one message within Discord's 40-component limit.
-  proof_rows=board_proof_rows(blocks,exclude=previews)
-  compact=2+sum(row._total_count for row in proof_rows)+sum(7 if results else 3 for _,results in blocks)>40
-  # When thumbnails are present, group non-thumbnail rows rather than
-  # overflowing Discord's component limit. Keep every bracket intact.
-  if previews:
-   projected=2+sum(row._total_count for row in proof_rows)+sum(
-    2+sum(row._total_count for row in inline_rank_rows(results,previews,show_champion=False))
-    for _,results in blocks
-   )
-   if projected>40:
-    raise ValueError("too many proof thumbnails for this leaderboard")
-  for row in proof_rows:
-   self.add_item(row)
+  compact=2+sum(7 if results else 3 for _,results in blocks)>40
   for variant,results in blocks:
    panel=ui.Container(accent_colour=GOLD)
    panel.add_item(ui.TextDisplay(
     f"### {clean(variant)}"
    ))
-   if previews:
-    for row in inline_rank_rows(results,previews,show_champion=False):
-     panel.add_item(row)
-   else:
-    add_featured_ranking(panel,results,compact=compact)
+   add_featured_ranking(panel,results,compact=compact,omit=omit)
    self.add_item(panel)
 
  @classmethod
@@ -1195,80 +1146,160 @@ class RaidLeaderboard(ui.LayoutView):
   return cls(activity,await cls.blocks(g,activity))
 
 
-BOARD_IMAGE_SUFFIXES={".png",".jpg",".jpeg",".gif",".webp"}
-BOARD_UPLOAD_BUDGET=20*1024*1024
+def linked_board_view(factory,activity,blocks):
+ view=factory(activity,blocks)
+ if factory is not RaidLeaderboard:
+  return view
+ # Discord limits all Text Display strings in one message to 4,000
+ # characters. Preserve all entries and prioritize champion links.
+ def length():
+  return sum(len(item.content.encode("utf-16-le"))//2 for item in view.walk_children()
+             if isinstance(item,ui.TextDisplay))
+ if length()<=4000:
+  return view
+ omit=set()
+ for rank in range(4,-1,-1):
+  for _,rows in reversed(blocks):
+   if rank<len(rows) and proof_text(rows[rank]):
+    omit.add(rows[rank]["id"])
+    view=factory(activity,blocks,omit=omit)
+    if length()<=4000:
+     logging.warning("Trimmed %s proof links to fit Discord text limit for %s",len(omit),activity)
+     return view
+ return view
 
 
-def build_public_board(activity,blocks,existing,filesize_limit):
- """Attach full screenshots to the board itself, retaining stable attachments."""
- factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
- previews={}
- added=[]
- kept=[]
- prior={a.filename:a for a in existing}
- budget=BOARD_UPLOAD_BUDGET
- # Smaller boards can show each proof inline. If Discord's size or component
- # budget would be exceeded, leave access to that specific proof as a fallback.
- for _,results in blocks:
-  for r in results:
-   sid=r["id"]
-   if sid in previews or len(previews)>=10:
-    continue
-   path=archive_path(DBPATH,r["proof"])
-   if path is None or path.suffix not in BOARD_IMAGE_SUFFIXES:
-    continue
-   try:
-    size=path.stat().st_size
-   except OSError:
-    continue
-   name=f"pb-{sid}-{path.name}"
-   keep=prior.get(name)
-   if keep is None and (size>filesize_limit or size>budget):
-    continue
-   previews[sid]=f"attachment://{name}"
-   try:
-    view=factory(activity,blocks,previews)
-    if view.total_children_count>40:
-     raise ValueError("too many components")
-    if keep is not None:
-     kept.append(keep)
-    else:
-     added.append(discord.File(path,filename=name))
-     budget-=size
-   except (ValueError,OSError):
-    previews.pop(sid,None)
-   except Exception:
-    for file in added:
-     file.close()
-    raise
- return factory(activity,blocks,previews),kept,added
+def proof_attachment_name(r,path):
+ return f"pb-{r['id']}-{path.name}"
 
 
-async def write_public_board(channel,guild_id,activity,*,message=None):
- """Edit the existing board or create it, including its persistent media."""
- factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
- blocks=await factory.blocks(guild_id,activity)
- limit=getattr(getattr(channel,"guild",None),"filesize_limit",8*1024*1024)
- view,kept,added=build_public_board(
-  activity,blocks,message.attachments if message is not None else (),limit,
- )
+async def cache_proof_from_review(r,path):
+ # Overflow media uses the existing approved review message as storage.
+ # The public board links to the signed file, never to the staff channel.
+ if r["status"]!="approved" or not r["review_channel"] or not r["review_message"]:
+  return
+ filename=proof_attachment_name(r,path)
  try:
-  mentions=discord.AllowedMentions.none()
-  if message is not None:
-   if kept or added or message.attachments:
-    updated=await message.edit(view=view,attachments=[*kept,*added],allowed_mentions=mentions)
-   else:
-    updated=await message.edit(view=view,allowed_mentions=mentions)
-  elif added:
-   updated=await channel.send(view=view,files=added,allowed_mentions=mentions)
-  else:
-   updated=await channel.send(view=view,allowed_mentions=mentions)
-  if kept or added:
-   logging.info("Updated PB proof thumbnails for %s: linked=%s",activity,len(kept)+len(added))
-  return updated
- finally:
-  for file in added:
-   file.close()
+  channel=bot.get_channel(r["review_channel"]) or await bot.fetch_channel(r["review_channel"])
+  message=await channel.fetch_message(r["review_message"])
+  if message.author.id!=bot.user.id:
+   return
+  existing=next((a for a in message.attachments if a.filename==filename),None)
+  if existing is None:
+   if len(message.attachments)>=10:
+    return
+   file=discord.File(path,filename=filename)
+   try:
+    message=await message.edit(attachments=[*message.attachments,file],
+                               allowed_mentions=discord.AllowedMentions.none())
+   finally:
+    file.close()
+   existing=next((a for a in message.attachments if a.filename==filename),None)
+  if existing:
+   cache_public_attachment(r["proof"],existing)
+ except (discord.HTTPException,OSError):
+  logging.exception("Unable to refresh overflow proof for PB #%s",r["id"])
+
+
+async def write_linked_board(channel,g,activity,message=None,*,archived_only=False):
+ factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
+ async with PUBLIC_PROOF_LOCK:
+  blocks=await factory.blocks(g,activity)
+  proofs={}
+  for _,results in blocks:
+   for r in results:
+    # Ranking queries are approved-only. Keep the upload guard here too.
+    if r["status"]!="approved":
+     continue
+    path=archive_path(DBPATH,r["proof"])
+    if path and path.is_file():
+     proofs.setdefault(r["proof"],(r,path))
+  now_ts=datetime.now(timezone.utc).timestamp()
+  if archived_only and not proofs:
+   return
+  if isinstance(message,int):
+   message=await channel.fetch_message(message)
+  existing={a.filename:a for a in message.attachments} if message else {}
+  kept=[]
+  uploads=[]
+  hosted={}
+  budget=BOARD_ATTACHMENT_BUDGET
+  limit=getattr(getattr(channel,"guild",None),"filesize_limit",8*1024*1024)
+  for ref,(r,path) in proofs.items():
+   filename=proof_attachment_name(r,path)
+   if filename in existing:
+    attachment=existing[filename]
+    kept.append(attachment)
+    cache_public_attachment(ref,attachment)
+    hosted[filename]=ref
+  try:
+   for ref,(r,path) in proofs.items():
+    filename=proof_attachment_name(r,path)
+    if filename in hosted:
+     continue
+    try:
+     size=path.stat().st_size
+     if len(kept)+len(uploads)<10 and size<=min(budget,limit):
+      uploads.append(discord.File(path,filename=filename))
+      hosted[filename]=ref
+      budget-=size
+    except OSError:
+     logging.exception("Unable to open archived proof for PB #%s",r["id"])
+   mentions=discord.AllowedMentions.none()
+   if message is None:
+    args={"files":uploads} if uploads else {}
+    message=await channel.send(view=linked_board_view(factory,activity,blocks),allowed_mentions=mentions,**args)
+   elif uploads:
+    message=await message.edit(view=linked_board_view(factory,activity,blocks),attachments=[*kept,*uploads],
+                              allowed_mentions=mentions)
+   for attached in message.attachments:
+    if ref:=hosted.get(attached.filename):
+     cache_public_attachment(ref,attached)
+   for ref,(r,path) in proofs.items():
+    if proof_attachment_name(r,path) not in hosted and proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(ref),now_ts):
+     await cache_proof_from_review(r,path)
+   args={"attachments":[a for a in message.attachments if a.filename in hosted]} if message.attachments else {}
+   return await message.edit(view=linked_board_view(factory,activity,blocks),allowed_mentions=mentions,**args)
+  finally:
+   for upload in uploads:
+    upload.close()
+
+
+async def count_reachable_proof_images(urls):
+ async def probe(session,url):
+  try:
+   async with session.get(url,headers={"Range":"bytes=0-31"},allow_redirects=False) as response:
+    return response.status in (200,206) and response.content_type.startswith("image/")
+  except (aiohttp.ClientError,asyncio.TimeoutError):
+   return False
+
+ async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+  return sum(await asyncio.gather(*(probe(session,url) for url in urls)))
+
+
+async def refresh_live_proof_links():
+ """Rotate signed Discord links before expiration using the original attached files."""
+ while not bot.is_closed():
+  await asyncio.sleep(PROOF_LINK_REFRESH_SECONDS)
+  for guild in bot.guilds:
+   try:
+    boards=await store.boss_boards(guild.id)
+   except aiosqlite.Error:
+    logging.exception("Unable to read PB boards for %s",guild.id)
+    continue
+   for board in boards:
+    activity=board["activity"]
+    if activity not in BOSSES and activity not in RAIDS:
+     continue
+    try:
+     channel=bot.get_channel(board["channel"]) or await bot.fetch_channel(board["channel"])
+     await write_linked_board(channel,guild.id,activity,board["message"],archived_only=True)
+    except (discord.HTTPException,OSError,aiosqlite.Error):
+     logging.exception("Unable to rotate proof links for %s",activity)
+   try:
+    await refresh_proof_snapshot(guild.id)
+   except aiosqlite.Error:
+    logging.exception("Unable to read PB snapshot for %s",guild.id)
 
 
 class RaidBrowser(ui.LayoutView):
@@ -1681,18 +1712,6 @@ async def refresh_panel(g,activity=None):
   except discord.HTTPException:
    logging.exception("Unable to refresh PB points panel")
 
- r=await store.snapshot_panel(g)
- if r:
-  try:
-   ch=bot.get_channel(r["channel"]) or await bot.fetch_channel(r["channel"])
-   msg=await ch.fetch_message(r["message"])
-   await msg.edit(
-    view=await SnapshotPanel.make(g),
-    allowed_mentions=discord.AllowedMentions.none()
-   )
-  except discord.HTTPException:
-   logging.exception("Unable to refresh public panel")
-
  if activity in BOSSES:
   public_activities=[("Bosses",activity)]
  elif activity in RAIDS:
@@ -1710,12 +1729,14 @@ async def refresh_panel(g,activity=None):
   try:
    ch=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
    msg=await ch.fetch_message(tracked["message"])
-   await write_public_board(ch,g,name,message=msg)
+   await write_linked_board(ch,g,name,msg)
   except discord.HTTPException:
    logging.exception(
     "Unable to refresh public PB board for %s",
     name
    )
+
+ await refresh_proof_snapshot(g)
 
 
 async def update_review(r):
@@ -1804,8 +1825,16 @@ async def refresh_proof_snapshot(guild_id):
  try:
   channel=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
   message=await channel.fetch_message(tracked["message"])
-  await paced_startup_edit(message,view=await SnapshotPanel.make(guild_id),
-                           allowed_mentions=discord.AllowedMentions.none())
+  leaders={activity:await store.raid_top3(guild_id,activity) for activity in RAIDS}
+  recent=await store.recent_approved(guild_id,3)
+  at=datetime.now(timezone.utc).timestamp()
+  async with PUBLIC_PROOF_LOCK:
+   for r in [*recent,*(r for rows in leaders.values() for r in rows)]:
+    path=archive_path(DBPATH,r["proof"])
+    if path and path.is_file() and proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(r["proof"]),at):
+     await cache_proof_from_review(r,path)
+   await paced_startup_edit(message,view=SnapshotPanel(leaders,recent),
+                            allowed_mentions=discord.AllowedMentions.none())
  except discord.HTTPException:
   logging.exception("Unable to refresh PB proof links on the snapshot")
 
@@ -2816,7 +2845,7 @@ async def pbpanel(i:discord.Interaction):
 
   # Minigames first.
   for activity in ("Inferno","Fortis Colosseum","Fight Caves"):
-   board_msg=await write_public_board(i.channel,i.guild_id,activity)
+   board_msg=await write_linked_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(
     i.guild_id,
     activity,
@@ -2827,7 +2856,7 @@ async def pbpanel(i:discord.Interaction):
 
   # Then the four raid boards, each showing Top 1-5 per format.
   for activity in RAIDS:
-   board_msg=await write_public_board(i.channel,i.guild_id,activity)
+   board_msg=await write_linked_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(
     i.guild_id,
     activity,
@@ -2840,7 +2869,7 @@ async def pbpanel(i:discord.Interaction):
   for activity in BOSSES:
    if activity in ("Inferno","Fortis Colosseum","Fight Caves"):
     continue
-   board_msg=await write_public_board(i.channel,i.guild_id,activity)
+   board_msg=await write_linked_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(
     i.guild_id,
     activity,
