@@ -192,31 +192,54 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("&hm=fresh", updated)
                 self.assertNotIn("&hm=initial", updated)
 
-    async def test_approved_review_retains_an_attachment_via_native_file_component(self):
+    async def test_existing_review_replaces_tile_with_button_and_retains_proof(self):
         r = record(status="approved", proof=f"archive:{1:032x}.png", review_channel=17, review_message=42)
         with tempfile.TemporaryDirectory() as tmp, patch.dict(bot.PUBLIC_PROOF_URLS, clear=True):
             path = Path(tmp) / f"{1:032x}.png"
             path.write_bytes(DATA)
             filename = bot.proof_attachment_name(r, path)
             url = f"https://cdn.discordapp.com/attachments/17/987/{filename}?ex=ffffffff"
-            media = SimpleNamespace(url=url)
-            component = SimpleNamespace(type=bot.discord.ComponentType.file, media=media)
-            published = SimpleNamespace(attachments=[], components=[SimpleNamespace(children=[component])])
-            message = SimpleNamespace(attachments=[], components=[], author=SimpleNamespace(id=5),
-                                      edit=AsyncMock(return_value=published))
-            channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
-            with patch.object(bot, "bot", SimpleNamespace(get_channel=lambda _: channel, user=SimpleNamespace(id=5))):
+            tile = SimpleNamespace(type=bot.discord.ComponentType.file,
+                                   media=SimpleNamespace(url=url, attachment_id=987))
+            attached = SimpleNamespace(url=url, filename=filename)
+            published = SimpleNamespace(id=42, attachments=[attached], components=[],
+                                        author=SimpleNamespace(id=5))
+            original = SimpleNamespace(id=42, attachments=[], components=[SimpleNamespace(children=[tile])],
+                                       author=published.author, edit=AsyncMock(return_value=published))
+            channel = SimpleNamespace(fetch_message=AsyncMock(side_effect=[original, published, published]))
+            with patch.object(bot, "bot", SimpleNamespace(get_channel=lambda _: channel, user=published.author)):
                 await bot.cache_proof_from_review(r, path)
-                edit = message.edit.await_args.kwargs
-                self.assertEqual(edit["attachments"][0].filename, filename)
-                components = [item for item in edit["view"].walk_children() if isinstance(item, bot.ui.File)]
-                self.assertEqual([item.media.url for item in components], [f"attachment://{filename}"])
+                edit = original.edit.await_args.kwargs
+                self.assertEqual(edit["attachments"][0].to_dict(), {"id": 987, "filename": filename})
+                self.assertFalse(any(isinstance(item, bot.ui.File) for item in edit["view"].walk_children()))
+                self.assertTrue(any(isinstance(item, bot.ProofButton) and item.item.label == "View Proof"
+                                    for item in edit["view"].walk_children()))
                 self.assertEqual(bot.PUBLIC_PROOF_URLS[r["proof"]], url)
-                channel.fetch_message.return_value = SimpleNamespace(
-                    attachments=[], components=published.components, author=message.author, edit=message.edit
-                )
                 await bot.cache_proof_from_review(r, path)
-                message.edit.assert_awaited_once()
+                original.edit.assert_awaited_once()
+                self.assertEqual(path.read_bytes(), DATA)
+
+    async def test_review_restores_working_public_image_if_discord_drops_unshown_upload(self):
+        r = record(status="approved", proof=f"archive:{1:032x}.png", review_channel=17, review_message=42)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(bot.PUBLIC_PROOF_URLS, clear=True):
+            path = Path(tmp) / f"{1:032x}.png"
+            path.write_bytes(DATA)
+            filename = bot.proof_attachment_name(r, path)
+            url = f"https://cdn.discordapp.com/attachments/17/987/{filename}?ex=ffffffff"
+            media = SimpleNamespace(url=url, attachment_id=987)
+            component = SimpleNamespace(type=bot.discord.ComponentType.file, media=media)
+            restored = SimpleNamespace(id=42, attachments=[], components=[SimpleNamespace(children=[component])])
+            original = SimpleNamespace(id=42, attachments=[], components=[], author=SimpleNamespace(id=5))
+            missing = SimpleNamespace(id=42, attachments=[], components=[], edit=AsyncMock(return_value=restored))
+            original.edit = AsyncMock(return_value=missing)
+            channel = SimpleNamespace(fetch_message=AsyncMock(side_effect=[original, missing]))
+            with patch.object(bot, "bot", SimpleNamespace(get_channel=lambda _: channel, user=original.author)):
+                await bot.cache_proof_from_review(r, path)
+                edit = missing.edit.await_args.kwargs
+                self.assertEqual(edit["attachments"][0].filename, filename)
+                self.assertTrue(any(isinstance(item, bot.ui.File) for item in edit["view"].walk_children()))
+                self.assertEqual(bot.PUBLIC_PROOF_URLS[r["proof"]], url)
+                self.assertEqual(path.read_bytes(), DATA)
 
     def test_refreshes_signatures_before_expiration(self):
         at = 100_000

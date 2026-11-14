@@ -731,7 +731,7 @@ async def on_ready():
     await paced_startup_edit(message, content=f"## [↑ CLICK TO SCROLL TO THE TOP]({url})",allowed_mentions=discord.AllowedMentions.none())
    except discord.HTTPException:
     logging.exception("Failed to refresh PB scroll-to-top footer")
-  priority={"Inferno":0,"Araxxor":1,"Royal Titans":2}
+  priority={"Demonic Brutus":-1,"Inferno":0,"Araxxor":1,"Royal Titans":2}
   for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
    if activity not in BOSSES and activity not in RAIDS:continue
@@ -740,7 +740,7 @@ async def on_ready():
     message=await ch.fetch_message(record["message"])
     saved=await write_linked_board(ch,guild.id,activity,message=message)
     await asyncio.sleep(1.4)
-    if activity in ("Inferno","Araxxor"):
+    if activity in ("Demonic Brutus","Inferno","Araxxor"):
      body=old_announcement_text(saved)
      view=ui.LayoutView.from_message(saved)
      controls=sum((getattr(item,"custom_id",None) or "").startswith("pb:proof:")
@@ -1182,9 +1182,19 @@ def review_proof_media(message,filename):
  return None
 
 
+class RetainedProofAttachment:
+ """V2 media can expose an attachment ID without returning an Attachment."""
+ def __init__(self,media):
+  self.id=media.attachment_id
+  self.filename=discord_attachment_key(media.url)[-1]
+
+ def to_dict(self):
+  return {"id":self.id,"filename":self.filename}
+
+
 async def cache_proof_from_review(r,path):
- # Back public image links with the approved record's existing staff message.
- # The clickable link is to the signed image, not to the restricted channel.
+ # Use the existing staff message to refresh signed URLs, without putting an
+ # attachment tile or preview on the card when Discord retains the upload.
  if r["status"]!="approved" or not r["review_channel"] or not r["review_message"]:
   return
  filename=proof_attachment_name(r,path)
@@ -1193,26 +1203,55 @@ async def cache_proof_from_review(r,path):
   message=await channel.fetch_message(r["review_message"])
   if message.author.id!=bot.user.id:
    return
-  existing=next((a for a in message.attachments if a.filename==filename),None)
-  if existing is None:
-   existing=review_proof_media(message,filename)
-  if existing is None:
-   if len(message.attachments)>=10:
+
+  attached=next((a for a in message.attachments if a.filename==filename),None)
+  tile=review_proof_media(message,filename)
+  existing=attached or tile
+  # Do not disturb cards that already have the button and an intact attachment.
+  if attached and not tile:
+   cache_public_attachment(r["proof"],attached)
+   return
+
+  retained=list(message.attachments)
+  if tile and not attached:
+   if not getattr(tile,"attachment_id",None):
+    cache_public_attachment(r["proof"],tile)
     return
-   file=discord.File(path,filename=filename)
-   try:
-    message=await message.edit(view=Review(r,archived_filename=filename),
-                               attachments=[*message.attachments,file],
-                               allowed_mentions=discord.AllowedMentions.none())
-   finally:
+   retained.append(RetainedProofAttachment(tile))
+  if not existing and len(retained)>=10:
+   return
+
+  # Explicitly retain the attachment even if Discord returned its ID only
+  # inside the tile. Check the fetched card before trusting the new link.
+  file=None if existing else discord.File(path,filename=filename)
+  try:
+   updated=await message.edit(view=Review(r),attachments=[*retained,*([file] if file else [])],
+                              allowed_mentions=discord.AllowedMentions.none())
+  finally:
+   if file:
     file.close()
-   existing=next((a for a in message.attachments if a.filename==filename),None)
-   if existing is None:
-    existing=review_proof_media(message,filename)
+  saved=await channel.fetch_message(updated.id)
+  attached=next((a for a in saved.attachments if a.filename==filename),None)
+  if attached and cache_public_attachment(r["proof"],attached):
+   if r["id"]==71 or tile:
+    logging.info("Restored View Proof on approved PB #%s with retained image",r["id"])
+   return
+
+  # If the API drops unrepresented files, restore the known working tile
+  # from the archive immediately so the public leaderboard still has proof.
   if existing:
-   cache_public_attachment(r["proof"],existing)
-  else:
-   logging.warning("Discord did not return an attached image for PB #%s",r["id"])
+   logging.warning("Discord dropped the hidden attachment for PB #%s, restoring its proof",r["id"])
+  file=discord.File(path,filename=filename)
+  try:
+   updated=await saved.edit(view=Review(r,archived_filename=filename),
+                            attachments=[*saved.attachments,file],
+                            allowed_mentions=discord.AllowedMentions.none())
+  finally:
+   file.close()
+  restored=next((a for a in updated.attachments if a.filename==filename),None)
+  restored=restored or review_proof_media(updated,filename)
+  if restored:
+   cache_public_attachment(r["proof"],restored)
  except (discord.HTTPException,OSError):
   logging.exception("Unable to refresh proof image for PB #%s",r["id"])
 
