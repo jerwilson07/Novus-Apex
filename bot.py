@@ -709,15 +709,14 @@ async def on_ready():
    try:
     ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
     message=await ch.fetch_message(record["message"])
-    view=await (BossLeaderboard.make(guild.id,activity) if activity in BOSSES else RaidLeaderboard.make(guild.id,activity))
-    await paced_startup_edit(message, view=view,allowed_mentions=discord.AllowedMentions.none())
+    await write_public_board(ch,guild.id,activity,message=message)
+    await asyncio.sleep(1.4)
     if activity=="Araxxor":
      saved=await ch.fetch_message(message.id)
      saved_view=ui.LayoutView.from_message(saved)
-     proof_buttons=sum((getattr(item,"custom_id",None) or "").startswith("pb:proof:view:")
-                       for item in saved_view.walk_children())
-     logging.info("Verified Araxxor board %s: clickable proof buttons=%s command text=%s",
-                  message.id,proof_buttons,"/pbviewproof" in old_announcement_text(saved))
+     thumbnails=sum(isinstance(item,ui.Thumbnail) for item in saved_view.walk_children())
+     logging.info("Verified Araxxor board %s: native proof thumbnails=%s attached files=%s",
+                  message.id,thumbnails,len(saved.attachments))
     if activity in SHARED_SIZE_RAIDS:
      logging.info("Refreshed raid team-size brackets for %s on Discord message %s",activity,message.id)
     if guild.id==NOVUS_GUILD_ID and activity=="Royal Titans":
@@ -725,6 +724,7 @@ async def on_ready():
    except discord.HTTPException:
     logging.exception("Failed to refresh PB icon for %s",activity)
   await refresh_proof_snapshot(guild.id)
+  logging.info("Finished PB leaderboard proof refresh for guild %s",guild.id)
 
  # Update the tracked message in place after the animated asset deploys.
  # Do not delete/repost the board or alter its other panels.
@@ -1014,11 +1014,56 @@ def add_featured_ranking(panel, results, *, compact=False):
   panel.add_item(ui.TextDisplay("\n".join(remaining)))
 
 
-def board_proof_rows(blocks,*,force_menu=False):
+def inline_rank_rows(results, previews, *, show_champion=True):
+ """Group plain rows but put each archived screenshot beside its own time."""
+ if not results:
+  return [ui.TextDisplay("-# Be the first to claim this record!")]
+ rows=[]
+ plain=[]
+
+ def flush():
+  if plain:
+   rows.append(ui.TextDisplay("\n".join(plain)))
+   plain.clear()
+
+ for rank in range(5):
+  if rank>=len(results):
+   plain.append(f"{MEDALS[rank]} Empty")
+   continue
+  r=results[rank]
+  if rank==0 and show_champion:
+   label=f"## {MEDALS[0]} {fmt(r['ms'])}\n{public_members(r)}\n-# Achieved {pb_date_label(r['pb_date'])}"
+   if evidence:=proof_text(r):
+    label+=f"\n{evidence}"
+   if r["id"] in previews:
+    label+="\n-# NOVUS #1"
+  else:
+   label=f"{MEDALS[rank]} **{fmt(r['ms'])}** · {public_members(r)}"
+   if evidence:=proof_text(r,"Proof"):
+    label+=f" · {evidence}"
+  if media:=previews.get(r["id"]):
+   flush()
+   rows.append(ui.Section(ui.TextDisplay(label),accessory=ui.Thumbnail(
+    media,description=f"View proof for rank {rank+1}, {fmt(r['ms'])}",
+   )))
+  elif rank==0 and show_champion:
+   flush()
+   rows.append(ui.Section(ui.TextDisplay(label),accessory=ui.Button(
+    label="NOVUS #1",style=discord.ButtonStyle.success,disabled=True,
+    custom_id=f"pb:leader:first:{r['id']}",
+   )))
+  else:
+   plain.append(label)
+ flush()
+ return rows
+
+
+def board_proof_rows(blocks,*,force_menu=False,exclude=None):
  options={}
+ exclude=exclude or {}
  for variant,results in blocks:
   for rank,r in enumerate(results,1):
-   if is_private_proof(r["proof"]):
+   if r["id"] not in exclude and is_private_proof(r["proof"]):
     title=r["activity"] if variant=="Recent" else variant
     options.setdefault(r["id"],(title,rank,fmt(r["ms"])))
  if not options:
@@ -1035,8 +1080,9 @@ def board_proof_rows(blocks,*,force_menu=False):
 
 
 class BossLeaderboard(ui.LayoutView):
- def __init__(self,activity,blocks):
+ def __init__(self,activity,blocks,previews=None):
   super().__init__(timeout=None)
+  previews=previews or {}
 
   accent=RED if activity in ("Inferno","Fortis Colosseum","Fight Caves") else BLUE
   # Keep the boss title and PBs in one native Discord container.
@@ -1047,21 +1093,33 @@ class BossLeaderboard(ui.LayoutView):
   ))
 
   for index,(variant,results) in enumerate(blocks):
+   if previews and len(blocks)>1:
+    if index==0:
+     self.add_item(panel)
+    panel=ui.Container(accent_colour=accent)
+    panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
+    for row in inline_rank_rows(results,previews):
+     panel.add_item(row)
+    self.add_item(panel)
+    continue
    if index:
     panel.add_item(ui.Separator())
    if len(blocks)>1:
     panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   add_featured_ranking(panel,results)
+   if previews:
+    for row in inline_rank_rows(results,previews):
+     panel.add_item(row)
+   else:
+    add_featured_ranking(panel,results)
 
-  self.add_item(panel)
-  for row in board_proof_rows(blocks):
+  if not previews or len(blocks)<=1:
+   self.add_item(panel)
+  for row in board_proof_rows(blocks,exclude=previews):
    self.add_item(row)
 
  @classmethod
- async def make(cls,g,activity):
-  return cls(
-   activity,
-   [
+ async def blocks(cls,g,activity):
+  return [
     (
      variant,
      await store.ranking(
@@ -1073,12 +1131,16 @@ class BossLeaderboard(ui.LayoutView):
     )
     for variant in BOSSES[activity]
    ]
-  )
+
+ @classmethod
+ async def make(cls,g,activity):
+  return cls(activity,await cls.blocks(g,activity))
 
 
 class RaidLeaderboard(ui.LayoutView):
- def __init__(self,activity,blocks):
+ def __init__(self,activity,blocks,previews=None):
   super().__init__(timeout=None)
+  previews=previews or {}
 
   heading=ui.Container(accent_colour=GOLD)
   heading.add_item(ui.TextDisplay(
@@ -1088,8 +1150,17 @@ class RaidLeaderboard(ui.LayoutView):
 
   # The title uses 2 components and a populated featured bracket uses 7.
   # Keep every bracket on one message within Discord's 40-component limit.
-  proof_rows=board_proof_rows(blocks)
+  proof_rows=board_proof_rows(blocks,exclude=previews)
   compact=2+sum(row._total_count for row in proof_rows)+sum(7 if results else 3 for _,results in blocks)>40
+  # When thumbnails are present, group non-thumbnail rows rather than
+  # overflowing Discord's component limit. Keep every bracket intact.
+  if previews:
+   projected=2+sum(row._total_count for row in proof_rows)+sum(
+    2+sum(row._total_count for row in inline_rank_rows(results,previews,show_champion=False))
+    for _,results in blocks
+   )
+   if projected>40:
+    raise ValueError("too many proof thumbnails for this leaderboard")
   for row in proof_rows:
    self.add_item(row)
   for variant,results in blocks:
@@ -1097,14 +1168,16 @@ class RaidLeaderboard(ui.LayoutView):
    panel.add_item(ui.TextDisplay(
     f"### {clean(variant)}"
    ))
-   add_featured_ranking(panel,results,compact=compact)
+   if previews:
+    for row in inline_rank_rows(results,previews,show_champion=False):
+     panel.add_item(row)
+   else:
+    add_featured_ranking(panel,results,compact=compact)
    self.add_item(panel)
 
  @classmethod
- async def make(cls,g,activity):
-  return cls(
-   activity,
-   [
+ async def blocks(cls,g,activity):
+  return [
     (
      variant,
      await store.ranking(
@@ -1116,7 +1189,86 @@ class RaidLeaderboard(ui.LayoutView):
     )
     for variant in RAIDS[activity]
    ]
-  )
+
+ @classmethod
+ async def make(cls,g,activity):
+  return cls(activity,await cls.blocks(g,activity))
+
+
+BOARD_IMAGE_SUFFIXES={".png",".jpg",".jpeg",".gif",".webp"}
+BOARD_UPLOAD_BUDGET=20*1024*1024
+
+
+def build_public_board(activity,blocks,existing,filesize_limit):
+ """Attach full screenshots to the board itself, retaining stable attachments."""
+ factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
+ previews={}
+ added=[]
+ kept=[]
+ prior={a.filename:a for a in existing}
+ budget=BOARD_UPLOAD_BUDGET
+ # Smaller boards can show each proof inline. If Discord's size or component
+ # budget would be exceeded, leave access to that specific proof as a fallback.
+ for _,results in blocks:
+  for r in results:
+   sid=r["id"]
+   if sid in previews or len(previews)>=10:
+    continue
+   path=archive_path(DBPATH,r["proof"])
+   if path is None or path.suffix not in BOARD_IMAGE_SUFFIXES:
+    continue
+   try:
+    size=path.stat().st_size
+   except OSError:
+    continue
+   name=f"pb-{sid}-{path.name}"
+   keep=prior.get(name)
+   if keep is None and (size>filesize_limit or size>budget):
+    continue
+   previews[sid]=f"attachment://{name}"
+   try:
+    view=factory(activity,blocks,previews)
+    if view.total_children_count>40:
+     raise ValueError("too many components")
+    if keep is not None:
+     kept.append(keep)
+    else:
+     added.append(discord.File(path,filename=name))
+     budget-=size
+   except (ValueError,OSError):
+    previews.pop(sid,None)
+   except Exception:
+    for file in added:
+     file.close()
+    raise
+ return factory(activity,blocks,previews),kept,added
+
+
+async def write_public_board(channel,guild_id,activity,*,message=None):
+ """Edit the existing board or create it, including its persistent media."""
+ factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
+ blocks=await factory.blocks(guild_id,activity)
+ limit=getattr(getattr(channel,"guild",None),"filesize_limit",8*1024*1024)
+ view,kept,added=build_public_board(
+  activity,blocks,message.attachments if message is not None else (),limit,
+ )
+ try:
+  mentions=discord.AllowedMentions.none()
+  if message is not None:
+   if kept or added or message.attachments:
+    updated=await message.edit(view=view,attachments=[*kept,*added],allowed_mentions=mentions)
+   else:
+    updated=await message.edit(view=view,allowed_mentions=mentions)
+  elif added:
+   updated=await channel.send(view=view,files=added,allowed_mentions=mentions)
+  else:
+   updated=await channel.send(view=view,allowed_mentions=mentions)
+  if kept or added:
+   logging.info("Updated PB proof thumbnails for %s: linked=%s",activity,len(kept)+len(added))
+  return updated
+ finally:
+  for file in added:
+   file.close()
 
 
 class RaidBrowser(ui.LayoutView):
@@ -1558,15 +1710,7 @@ async def refresh_panel(g,activity=None):
   try:
    ch=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
    msg=await ch.fetch_message(tracked["message"])
-   view=(
-    await BossLeaderboard.make(g,name)
-    if category=="Bosses"
-    else await RaidLeaderboard.make(g,name)
-   )
-   await msg.edit(
-    view=view,
-    allowed_mentions=discord.AllowedMentions.none()
-   )
+   await write_public_board(ch,g,name,message=msg)
   except discord.HTTPException:
    logging.exception(
     "Unable to refresh public PB board for %s",
@@ -2672,13 +2816,7 @@ async def pbpanel(i:discord.Interaction):
 
   # Minigames first.
   for activity in ("Inferno","Fortis Colosseum","Fight Caves"):
-   board_msg=await i.channel.send(
-    view=await BossLeaderboard.make(
-     i.guild_id,
-     activity
-    ),
-    allowed_mentions=discord.AllowedMentions.none()
-   )
+   board_msg=await write_public_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(
     i.guild_id,
     activity,
@@ -2689,13 +2827,7 @@ async def pbpanel(i:discord.Interaction):
 
   # Then the four raid boards, each showing Top 1-5 per format.
   for activity in RAIDS:
-   board_msg=await i.channel.send(
-    view=await RaidLeaderboard.make(
-     i.guild_id,
-     activity
-    ),
-    allowed_mentions=discord.AllowedMentions.none()
-   )
+   board_msg=await write_public_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(
     i.guild_id,
     activity,
@@ -2708,13 +2840,7 @@ async def pbpanel(i:discord.Interaction):
   for activity in BOSSES:
    if activity in ("Inferno","Fortis Colosseum","Fight Caves"):
     continue
-   board_msg=await i.channel.send(
-    view=await BossLeaderboard.make(
-     i.guild_id,
-     activity
-    ),
-    allowed_mentions=discord.AllowedMentions.none()
-   )
+   board_msg=await write_public_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(
     i.guild_id,
     activity,

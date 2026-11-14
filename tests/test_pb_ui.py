@@ -597,11 +597,16 @@ class PBStartupRefreshTests(unittest.TestCase):
             and isinstance(node.func, ast.Name)
             and node.func.id == "paced_startup_edit"
         ]
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 4)
         for call in calls:
             self.assertTrue(call.args, "Target Discord message must be first argument")
             self.assertIsInstance(call.args[0], ast.Name)
             self.assertEqual(call.args[0].id, "message")
+        boards = [node for node in ast.walk(ready) if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name) and node.func.id == "write_public_board"]
+        self.assertEqual(len(boards), 1)
+        self.assertTrue(any(kw.arg == "message" and isinstance(kw.value, ast.Name)
+                            and kw.value.id == "message" for kw in boards[0].keywords))
 
 if __name__ == "__main__":
     unittest.main()

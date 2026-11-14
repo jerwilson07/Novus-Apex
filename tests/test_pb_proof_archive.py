@@ -154,6 +154,37 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([button.sid for button in buttons], [14, 11, 67])
         self.assertNotIn("/pbviewproof", str(board.to_components()))
 
+    async def test_araxxor_shows_three_full_image_thumbnails_without_buttons(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bot, "DBPATH", str(Path(tmp) / "pb.sqlite3")):
+            rows = []
+            for sid, ms in ((14, 43800), (11, 46200), (67, 51800)):
+                ref = f"archive:{sid:032x}.png"
+                path = archive.archive_path(bot.DBPATH, ref)
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(DATA)
+                rows.append(record(id=sid, proof=ref, ms=ms, activity="Araxxor"))
+            blocks = [("Standard", rows)]
+            channel = SimpleNamespace(guild=SimpleNamespace(filesize_limit=1024))
+            message = SimpleNamespace(attachments=[], edit=AsyncMock())
+            with patch.object(bot.BossLeaderboard, "blocks", new=AsyncMock(return_value=blocks)):
+                await bot.write_public_board(channel, 123, "Araxxor", message=message)
+                call = message.edit.await_args.kwargs
+                view = call["view"]
+                files = call["attachments"]
+                self.assertEqual(len(files), 3)
+                native = [item for item in view.walk_children() if isinstance(item, bot.ui.Thumbnail)]
+                self.assertEqual([item.media.url for item in native],
+                                 [f"attachment://{file.filename}" for file in files])
+                self.assertEqual([item.description for item in native],
+                                 ["View proof for rank 1, 0:43.80", "View proof for rank 2, 0:46.20",
+                                  "View proof for rank 3, 0:51.80"])
+                self.assertFalse(any(isinstance(item, (bot.ProofButton, bot.BoardProofSelect))
+                                     for item in view.walk_children()))
+                existing = [SimpleNamespace(filename=file.filename) for file in files]
+                message.attachments = existing
+                await bot.write_public_board(channel, 123, "Araxxor", message=message)
+                self.assertEqual(message.edit.await_args.kwargs["attachments"], existing)
+
     async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
         ref = "archive:" + "c" * 32 + ".png"
         activity = "Chambers of Xeric"
