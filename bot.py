@@ -157,7 +157,6 @@ def unique_team_results(results,limit=5):
 PUBLIC_PROOF_URLS={}
 PUBLIC_PROOF_LOCK=asyncio.Lock()
 PROOF_LINK_REFRESH_SECONDS=3*60*60
-BOARD_ATTACHMENT_BUDGET=20*1024*1024
 
 def proof_text(r,label="Proof",*,omit=()):
  if r["id"] in omit:
@@ -747,9 +746,8 @@ async def on_ready():
      controls=sum((getattr(item,"custom_id",None) or "").startswith("pb:proof:")
                   for item in view.walk_children())
      thumbnails=sum(isinstance(item,ui.Thumbnail) for item in view.walk_children())
-     hosted={discord_attachment_key(a.url) for a in saved.attachments}
      urls=[url for url in re.findall(r"\[Proof\]\((https://[^\s)]+)\)",body)
-           if discord_attachment_key(url) in hosted]
+           if discord_attachment_key(url)]
      reachable=await count_reachable_proof_images(urls)
      logging.info("Verified %s PB board %s: inline proof links=%s proof controls=%s thumbnails=%s reachable images=%s/%s",
                   activity,message.id,body.count("[Proof]("),controls,thumbnails,reachable,len(urls))
@@ -1173,9 +1171,20 @@ def proof_attachment_name(r,path):
  return f"pb-{r['id']}-{path.name}"
 
 
+def review_proof_media(message,filename):
+ for component in message.components:
+  for child in getattr(component,"children",()):
+   file=getattr(child,"media",None) if getattr(child,"type",None)==discord.ComponentType.file else None
+   url=getattr(file,"url",None)
+   key=discord_attachment_key(url)
+   if key and key[-1]==filename:
+    return file
+ return None
+
+
 async def cache_proof_from_review(r,path):
- # Overflow media uses the existing approved review message as storage.
- # The public board links to the signed file, never to the staff channel.
+ # Back public image links with the approved record's existing staff message.
+ # The clickable link is to the signed image, not to the restricted channel.
  if r["status"]!="approved" or not r["review_channel"] or not r["review_message"]:
   return
  filename=proof_attachment_name(r,path)
@@ -1186,19 +1195,26 @@ async def cache_proof_from_review(r,path):
    return
   existing=next((a for a in message.attachments if a.filename==filename),None)
   if existing is None:
+   existing=review_proof_media(message,filename)
+  if existing is None:
    if len(message.attachments)>=10:
     return
    file=discord.File(path,filename=filename)
    try:
-    message=await message.edit(attachments=[*message.attachments,file],
+    message=await message.edit(view=Review(r,archived_filename=filename),
+                               attachments=[*message.attachments,file],
                                allowed_mentions=discord.AllowedMentions.none())
    finally:
     file.close()
    existing=next((a for a in message.attachments if a.filename==filename),None)
+   if existing is None:
+    existing=review_proof_media(message,filename)
   if existing:
    cache_public_attachment(r["proof"],existing)
+  else:
+   logging.warning("Discord did not return an attached image for PB #%s",r["id"])
  except (discord.HTTPException,OSError):
-  logging.exception("Unable to refresh overflow proof for PB #%s",r["id"])
+  logging.exception("Unable to refresh proof image for PB #%s",r["id"])
 
 
 async def write_linked_board(channel,g,activity,message=None,*,archived_only=False):
@@ -1208,61 +1224,24 @@ async def write_linked_board(channel,g,activity,message=None,*,archived_only=Fal
   proofs={}
   for _,results in blocks:
    for r in results:
-    # Ranking queries are approved-only. Keep the upload guard here too.
     if r["status"]!="approved":
      continue
     path=archive_path(DBPATH,r["proof"])
     if path and path.is_file():
      proofs.setdefault(r["proof"],(r,path))
-  now_ts=datetime.now(timezone.utc).timestamp()
   if archived_only and not proofs:
    return
   if isinstance(message,int):
    message=await channel.fetch_message(message)
-  existing={a.filename:a for a in message.attachments} if message else {}
-  kept=[]
-  uploads=[]
-  hosted={}
-  budget=BOARD_ATTACHMENT_BUDGET
-  limit=getattr(getattr(channel,"guild",None),"filesize_limit",8*1024*1024)
+  at=datetime.now(timezone.utc).timestamp()
   for ref,(r,path) in proofs.items():
-   filename=proof_attachment_name(r,path)
-   if filename in existing:
-    attachment=existing[filename]
-    kept.append(attachment)
-    cache_public_attachment(ref,attachment)
-    hosted[filename]=ref
-  try:
-   for ref,(r,path) in proofs.items():
-    filename=proof_attachment_name(r,path)
-    if filename in hosted:
-     continue
-    try:
-     size=path.stat().st_size
-     if len(kept)+len(uploads)<10 and size<=min(budget,limit):
-      uploads.append(discord.File(path,filename=filename))
-      hosted[filename]=ref
-      budget-=size
-    except OSError:
-     logging.exception("Unable to open archived proof for PB #%s",r["id"])
-   mentions=discord.AllowedMentions.none()
-   if message is None:
-    args={"files":uploads} if uploads else {}
-    message=await channel.send(view=linked_board_view(factory,activity,blocks),allowed_mentions=mentions,**args)
-   elif uploads:
-    message=await message.edit(view=linked_board_view(factory,activity,blocks),attachments=[*kept,*uploads],
-                              allowed_mentions=mentions)
-   for attached in message.attachments:
-    if ref:=hosted.get(attached.filename):
-     cache_public_attachment(ref,attached)
-   for ref,(r,path) in proofs.items():
-    if proof_attachment_name(r,path) not in hosted and proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(ref),now_ts):
-     await cache_proof_from_review(r,path)
-   args={"attachments":[a for a in message.attachments if a.filename in hosted]} if message.attachments else {}
-   return await message.edit(view=linked_board_view(factory,activity,blocks),allowed_mentions=mentions,**args)
-  finally:
-   for upload in uploads:
-    upload.close()
+   if proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(ref),at):
+    await cache_proof_from_review(r,path)
+  mentions=discord.AllowedMentions.none()
+  view=linked_board_view(factory,activity,blocks)
+  if message is None:
+   return await channel.send(view=view,allowed_mentions=mentions)
+  return await message.edit(view=view,allowed_mentions=mentions,attachments=[])
 
 
 async def count_reachable_proof_images(urls):
@@ -1563,7 +1542,7 @@ async def refresh_royal_titans_35_review_once():
 
 
 class Review(ui.LayoutView):
- def __init__(self,r,leader=None,placement=None):
+ def __init__(self,r,leader=None,placement=None,*,archived_filename=None):
   active=r["status"] in ("pending","awaiting_proof")
   super().__init__(timeout=None if active else 60)
   self.sid=r["id"]
@@ -1625,7 +1604,9 @@ class Review(ui.LayoutView):
    ))
 
   p=r["proof"]
-  if is_private_proof(p):
+  if archived_filename:
+   panel.add_item(ui.File(f"attachment://{archived_filename}"))
+  elif is_private_proof(p):
    panel.add_item(ui.ActionRow(ProofButton(r["id"])))
   elif p and valid_url(p):
    panel.add_item(
