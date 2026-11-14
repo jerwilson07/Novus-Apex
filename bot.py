@@ -2,10 +2,14 @@ import os, re, asyncio, logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
-import discord, aiosqlite
+import aiohttp, discord, aiosqlite
 from discord import app_commands, ui
 from discord.ext import commands
 from dotenv import load_dotenv
+from proof_archive import (
+ ProofUnavailable, archive_discord_proof, archive_path,
+ attachment_candidates, discord_attachment_key, is_private_proof,
+)
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -150,13 +154,19 @@ def unique_team_results(results,limit=5):
    break
  return unique
 
+def proof_text(r,label="↗ Proof"):
+ proof=r["proof"]
+ if is_private_proof(proof):
+  return f"`/pbviewproof {r['id']}`"
+ return f"[{label}]({proof})" if proof and valid_url(proof) else ""
+
 def short_record(r,rank,include_variant=False):
  lines=[f"{MEDALS[rank]} **{fmt(r['ms'])}**"]
  if include_variant:
   lines.append(f"**{clean(r['variant'])}**")
  lines.append(public_members(r))
- if r["proof"] and valid_url(r["proof"]):
-  lines.append(f"[↗ Proof]({r['proof']})")
+ if evidence:=proof_text(r):
+  lines.append(evidence)
  if rank==0:
   lines.append(f"-# Achieved {pb_date_label(r['pb_date'])}")
  return "\n".join(lines)
@@ -351,6 +361,17 @@ class Store:
   async with self.lock:
    await self.conn.execute("UPDATE submissions SET review_channel=?,review_message=? WHERE id=?",(ch,msg,sid))
    await self.conn.commit()
+ async def replace_proof(self,sid,guild,old,new,*,status=None,reopen=False):
+  async with self.lock:
+   values="proof=?,status='pending',updated=?" if reopen else "proof=?"
+   query=f"UPDATE submissions SET {values} WHERE id=? AND guild=? AND proof IS ?"
+   args=(new,now(),sid,guild,old) if reopen else (new,sid,guild,old)
+   if status is not None:
+    query+=" AND status=?"
+    args+=(status,)
+   c=await self.conn.execute(query,args)
+   await self.conn.commit()
+   return c.rowcount==1
  async def panel(self,g):return await self.one("SELECT * FROM panels WHERE guild=?",(g,))
  async def set_panel(self,g,ch,msg):
   async with self.lock:
@@ -445,6 +466,7 @@ intents=discord.Intents.default()
 class PB(commands.Bot):
  async def setup_hook(self):
   await store.open()
+  self.add_dynamic_items(ProofButton,BoardProofButton)
   self.add_view(Home())
   self.add_view(BossDirectory())
   for r in await store.all("SELECT * FROM submissions WHERE status IN ('pending','awaiting_proof') AND review_message IS NOT NULL"):
@@ -632,6 +654,10 @@ async def on_ready():
  if getattr(bot, "_startup_panels_refreshed", False):return
  bot._startup_panels_refreshed=True
  logging.info("Novus PB bot ready as %s (%s)",bot.user,bot.user.id)
+ try:
+  await recover_existing_proofs()
+ except Exception:
+  logging.exception("Proof recovery failed; continuing the leaderboard refresh")
  # One-time update of the two previously posted #1 cards, without reposting.
  if not getattr(bot,"_first_card_retrofit_started",False):
   bot._first_card_retrofit_started=True
@@ -690,6 +716,7 @@ async def on_ready():
      await verify_royal_titans_35_public(guild,ch,message.id)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB icon for %s",activity)
+  await refresh_proof_snapshot(guild.id)
 
  # Update the tracked message in place after the animated asset deploys.
  # Do not delete/repost the board or alter its other panels.
@@ -842,8 +869,8 @@ class SnapshotPanel(ui.LayoutView):
      f"{public_members(r)}\n"
      f"-# Achieved {pb_date_label(r['pb_date'])}"
     )
-    if r["proof"] and valid_url(r["proof"]):
-     recent_text+=f"\n[↗ Proof]({r['proof']})"
+    if evidence:=proof_text(r):
+     recent_text+=f"\n{evidence}"
     recent_panel.add_item(ui.TextDisplay(recent_text))
     if idx!=len(recent)-1:
      recent_panel.add_item(ui.Separator())
@@ -942,8 +969,8 @@ def add_featured_ranking(panel, results, *, compact=False):
   f"{public_members(champion)}\n"
   f"-# Achieved {pb_date_label(champion['pb_date'])}"
  )
- if champion["proof"] and valid_url(champion["proof"]):
-  champion_text+=f"\n[↗ Proof]({champion['proof']})"
+ if evidence:=proof_text(champion):
+  champion_text+=f"\n{evidence}"
  if not compact:
   panel.add_item(ui.Section(
    ui.TextDisplay(champion_text),
@@ -961,11 +988,8 @@ def add_featured_ranking(panel, results, *, compact=False):
    remaining.append(f"{MEDALS[rank]} Empty")
    continue
   r=results[rank]
-  proof=(
-   f" · [Proof]({r['proof']})"
-   if r["proof"] and valid_url(r["proof"])
-   else ""
-  )
+  evidence=proof_text(r,"Proof")
+  proof=f" · {evidence}" if evidence else ""
   remaining.append(
    f"{MEDALS[rank]} **{fmt(r['ms'])}** · {public_members(r)}{proof}"
   )
@@ -975,6 +999,10 @@ def add_featured_ranking(panel, results, *, compact=False):
  else:
   panel.add_item(ui.Separator())
   panel.add_item(ui.TextDisplay("\n".join(remaining)))
+
+
+def has_archived_board_proof(blocks):
+ return any(is_private_proof(r["proof"]) for _,results in blocks for r in results)
 
 
 class BossLeaderboard(ui.LayoutView):
@@ -997,6 +1025,8 @@ class BossLeaderboard(ui.LayoutView):
    add_featured_ranking(panel,results)
 
   self.add_item(panel)
+  if has_archived_board_proof(blocks):
+   self.add_item(ui.ActionRow(BoardProofButton()))
 
  @classmethod
  async def make(cls,g,activity):
@@ -1029,7 +1059,8 @@ class RaidLeaderboard(ui.LayoutView):
 
   # The title uses 2 components and a populated featured bracket uses 7.
   # Keep every bracket on one message within Discord's 40-component limit.
-  compact=2+sum(7 if results else 3 for _,results in blocks)>40
+  proof_button=has_archived_board_proof(blocks)
+  compact=2+2*proof_button+sum(7 if results else 3 for _,results in blocks)>40
   for variant,results in blocks:
    panel=ui.Container(accent_colour=GOLD)
    panel.add_item(ui.TextDisplay(
@@ -1037,6 +1068,8 @@ class RaidLeaderboard(ui.LayoutView):
    ))
    add_featured_ranking(panel,results,compact=compact)
    self.add_item(panel)
+  if proof_button:
+   self.add_item(ui.ActionRow(BoardProofButton()))
 
  @classmethod
  async def make(cls,g,activity):
@@ -1376,7 +1409,9 @@ class Review(ui.LayoutView):
    ))
 
   p=r["proof"]
-  if p and valid_url(p):
+  if is_private_proof(p):
+   panel.add_item(ui.ActionRow(ProofButton(r["id"])))
+  elif p and valid_url(p):
    panel.add_item(
     ui.TextDisplay(
      "### Proof\n"
@@ -1511,8 +1546,218 @@ async def update_review(r):
  try:
   ch=bot.get_channel(r["review_channel"]) or await bot.fetch_channel(r["review_channel"])
   msg=await ch.fetch_message(r["review_message"])
-  await msg.edit(view=await Review.make(r))
+  await msg.edit(view=await Review.make(r),allowed_mentions=discord.AllowedMentions.none())
  except discord.HTTPException:logging.exception("Unable to update review")
+
+
+async def recover_discord_proof(record,session):
+ original=record["proof"]
+ if not discord_attachment_key(original):
+  return None
+ candidates=[]
+ if record["review_channel"] and record["review_message"]:
+  try:
+   channel=bot.get_channel(record["review_channel"]) or await bot.fetch_channel(record["review_channel"])
+   message=await channel.fetch_message(record["review_message"])
+   candidates.extend(attachment_candidates(message,original))
+  except discord.HTTPException:
+   pass
+ for url in dict.fromkeys([*candidates,original]):
+  try:
+   return await archive_discord_proof(DBPATH,session,url)
+  except (ProofUnavailable,aiohttp.ClientError,TimeoutError,EOFError):
+   continue
+ return None
+
+
+async def restore_record_proof(record,session):
+ ref=await recover_discord_proof(record,session)
+ if not ref:
+  return None
+ try:
+  if await store.replace_proof(record["id"],record["guild"],record["proof"],ref):
+   return ref
+ except Exception:
+  archive_path(DBPATH,ref).unlink(missing_ok=True)
+  raise
+ archive_path(DBPATH,ref).unlink(missing_ok=True)
+ return None
+
+
+async def recover_existing_proofs():
+ for guild in bot.guilds:
+  records=await store.all(
+   """SELECT * FROM submissions WHERE guild=? AND status IN
+      ('approved','pending','awaiting_proof') AND proof IS NOT NULL""",(guild.id,)
+  )
+  candidates=[r for r in records if discord_attachment_key(r["proof"])]
+  archived=set()
+  gate=asyncio.Semaphore(3)
+  async with aiohttp.ClientSession() as session:
+   async def recover(record):
+    async with gate:
+     try:
+      if await restore_record_proof(record,session):
+       archived.add(record["id"])
+     except (OSError,aiosqlite.Error):
+      logging.exception("Unable to archive stored PB proof #%s",record["id"])
+   try:
+    async with asyncio.timeout(60):
+     await asyncio.gather(*(recover(r) for r in candidates))
+   except TimeoutError:
+    logging.warning("PB proof backfill reached startup budget; other proofs can recover on demand")
+  unresolved=[r["id"] for r in candidates if r["id"] not in archived]
+  logging.info("PB proof backfill: guild=%s archived=%s unresolved=%s ids=%s",
+               guild.id,len(archived),len(unresolved),unresolved)
+  # The persistent board refresh will pick up the new proof references.
+  # Re-render only affected live staff reviews, without sending new messages.
+  for r in candidates:
+   if r["id"] not in archived or r["status"] not in ("pending","awaiting_proof"):
+    continue
+   updated=await store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(guild.id,r["id"]))
+   if updated and updated["status"] in ("pending","awaiting_proof"):
+    await update_review(updated)
+    await asyncio.sleep(1.4)
+
+
+async def refresh_proof_snapshot(guild_id):
+ tracked=await store.snapshot_panel(guild_id)
+ if not tracked:
+  return
+ try:
+  channel=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
+  message=await channel.fetch_message(tracked["message"])
+  await paced_startup_edit(message,view=await SnapshotPanel.make(guild_id),
+                           allowed_mentions=discord.AllowedMentions.none())
+ except discord.HTTPException:
+  logging.exception("Unable to refresh PB proof links on the snapshot")
+
+
+async def show_record_proof(i,sid):
+ if i.guild_id is None or not 0<sid<2**63:
+  return await i.response.send_message("PB not found.",ephemeral=True)
+ record=await store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(i.guild_id,sid))
+ if not record or (record["status"]!="approved"
+                   and record["submitter"]!=i.user.id and not is_staff(i)):
+  return await i.response.send_message("PB not found or not available to you.",ephemeral=True)
+ proof=record["proof"]
+ if not is_private_proof(proof):
+  if proof and valid_url(proof):
+   return await i.response.send_message(f"Proof for PB #{sid}: <{proof}>",ephemeral=True)
+  return await i.response.send_message("No proof was saved for this PB.",ephemeral=True)
+ await i.response.defer(ephemeral=True,thinking=True)
+ if discord_attachment_key(proof):
+  try:
+   async with aiohttp.ClientSession() as session:
+    proof=await restore_record_proof(record,session)
+  except (OSError,aiosqlite.Error):
+   logging.exception("On-demand recovery failed for PB #%s",sid)
+   proof=None
+  if not proof:
+   current=await store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(i.guild_id,sid))
+   proof=current["proof"] if current else None
+ file=archive_path(DBPATH,proof)
+ if not file or not file.is_file():
+  return await i.followup.send(
+   "That original Discord upload could not be recovered. Use `/pbproof` to reattach it, or ask staff if it’s already approved.",
+   ephemeral=True,
+  )
+ try:
+  if file.stat().st_size>i.filesize_limit:
+   return await i.followup.send("The archived proof is larger than this Discord server can send.",ephemeral=True)
+  upload=discord.File(file,filename=f"PB-{sid}{file.suffix}")
+  try:
+   await i.followup.send(f"Proof for PB #{sid}",file=upload,ephemeral=True)
+  finally:
+   upload.close()
+ except (discord.HTTPException,OSError):
+  logging.exception("Unable to deliver proof for PB #%s",sid)
+  await i.followup.send("Discord couldn’t deliver this proof. Try again in a moment.",ephemeral=True)
+
+
+class ProofButton(ui.DynamicItem[ui.Button],template=r"pb:proof:view:(?P<sid>[0-9]+)"):
+ def __init__(self,sid):
+  super().__init__(ui.Button(label="View Proof",style=discord.ButtonStyle.secondary,
+                            custom_id=f"pb:proof:view:{sid}"))
+  self.sid=sid
+
+ @classmethod
+ async def from_custom_id(cls,interaction,item,match):
+  return cls(int(match["sid"]))
+
+ async def callback(self,i):
+  await show_record_proof(i,self.sid)
+
+
+class BoardProofModal(ui.Modal,title="View PB Proof"):
+ def __init__(self):
+  super().__init__(timeout=300)
+  self.number=ui.TextInput(label="PB submission number",max_length=19,placeholder="Number shown next to the PB")
+  self.add_item(self.number)
+
+ async def on_submit(self,i):
+  number=self.number.value.strip()
+  if not re.fullmatch(r"[0-9]{1,19}",number):
+   return await i.response.send_message("Enter the PB number shown on the leaderboard.",ephemeral=True)
+  await show_record_proof(i,int(number))
+
+
+class BoardProofButton(ui.DynamicItem[ui.Button],template=r"pb:proof:board"):
+ def __init__(self):
+  super().__init__(ui.Button(label="View Proof",style=discord.ButtonStyle.secondary,
+                            custom_id="pb:proof:board"))
+
+ @classmethod
+ async def from_custom_id(cls,interaction,item,match):
+  return cls()
+
+ async def callback(self,i):
+  await i.response.send_modal(BoardProofModal())
+
+
+@bot.tree.command(name="pbviewproof",description="Open the archived proof for a PB")
+@app_commands.guild_only()
+@app_commands.describe(submission_id="PB number shown next to the leaderboard record")
+async def pbviewproof(i:discord.Interaction,submission_id:int):
+ await show_record_proof(i,submission_id)
+
+
+async def save_interaction_proof(i,record,proof):
+ await i.response.defer(ephemeral=True,thinking=True)
+ saved=proof
+ if discord_attachment_key(proof):
+  try:
+   async with aiohttp.ClientSession() as session:
+    saved=await archive_discord_proof(DBPATH,session,proof)
+  except (ProofUnavailable,aiohttp.ClientError,TimeoutError,EOFError,OSError):
+   return await i.followup.send(
+    "Couldn’t archive that upload. Reattach a PNG, JPG, GIF, WebP, MP4, MOV or WebM "
+    "file up to 20 MiB, or use a lasting video link.",ephemeral=True,
+   )
+ try:
+  changed=await store.replace_proof(
+   record["id"],record["guild"],record["proof"],saved,status=record["status"],
+   reopen=record["status"]!="approved",
+  )
+ except aiosqlite.Error:
+  if saved!=proof:
+   archive_path(DBPATH,saved).unlink(missing_ok=True)
+  logging.exception("Could not save proof for PB #%s",record["id"])
+  return await i.followup.send("Couldn’t save that proof. Try again in a moment.",ephemeral=True)
+ if not changed:
+  if saved!=proof:
+   archive_path(DBPATH,saved).unlink(missing_ok=True)
+  return await i.followup.send("This PB changed while proof was uploading. Try again.",ephemeral=True)
+ updated=await store.one("SELECT * FROM submissions WHERE id=? AND guild=?",(record["id"],record["guild"]))
+ await i.followup.send(
+  f"Proof saved for PB #{record['id']}."
+  + (" The approval and ranking are unchanged." if record["status"]=="approved"
+     else " Staff can review it now."),ephemeral=True,
+ )
+ if updated:
+  await update_review(updated)
+  if updated["status"]=="approved":
+   await refresh_panel(i.guild_id,updated["activity"])
 
 
 def qualifies_for_first_place(new_record, previous_leader, current_ranking):
@@ -1540,8 +1785,8 @@ def first_place_announcement(r, previous_leader, leaderboard_url=None):
   f"-# PB achieved {pb_date_label(r['pb_date'])}",
  ]
  links=[]
- if r["proof"] and valid_url(r["proof"]):
-  links.append(f"[↗ Proof]({r['proof']})")
+ if evidence:=proof_text(r):
+  links.append(evidence)
  if leaderboard_url:
   links.append(f"[View leaderboard]({leaderboard_url})")
  if links:
@@ -1590,7 +1835,9 @@ class FirstPlaceAnnouncementCard(ui.LayoutView):
   # Avoid Discord unfurling direct proof images inside the public post.
   # Only the explicit View Proof link button should expose the evidence URL.
   links=ui.ActionRow()
-  if proof and valid_url(proof):
+  if is_private_proof(proof):
+   links.add_item(ProofButton(record["id"]))
+  elif proof and valid_url(proof):
    links.add_item(ui.Button(
     label="View Proof",
     style=discord.ButtonStyle.link,
@@ -1876,8 +2123,14 @@ async def decide(i,sid,choice):
  r=await store.one("SELECT * FROM submissions WHERE id=?",(sid,))
  if not r or r["guild"]!=i.guild_id:return await i.response.send_message("Record not found.",ephemeral=True)
  if r["status"] not in ("pending","awaiting_proof"):return await i.response.send_message("Already resolved.",ephemeral=True)
- if choice=="approve" and not r["proof"]:
-  return await i.response.send_message("Proof is required. Use Request Proof.",ephemeral=True)
+ if choice=="approve":
+  saved=archive_path(DBPATH,r["proof"])
+  if (not r["proof"] or discord_attachment_key(r["proof"])
+      or (saved is not None and not saved.is_file())):
+   return await i.response.send_message(
+    f"Proof is missing or expired. Try `/pbviewproof {sid}` to recover it, or use Request Proof for a new upload.",
+    ephemeral=True,
+   )
  if choice=="request" and r["status"]=="awaiting_proof":
   return await i.response.send_message("Already awaiting proof.",ephemeral=True)
  previous_leader=(await store.best_approved(i.guild_id,r["category"],r["activity"],r["variant"])) if choice=="approve" else None
@@ -1928,19 +2181,10 @@ class ProofUploadModal(ui.Modal,title="NOVUS | PB Proof"):
   if not (attachment.content_type or "").startswith(("image/","video/")):
    return await i.response.send_message("Only image/video files accepted.",ephemeral=True)
 
-  proof=attachment.url
-  if not valid_url(proof):
+  if not discord_attachment_key(attachment.url):
    return await i.response.send_message("Discord did not return a valid proof attachment URL.",ephemeral=True)
 
-  await i.response.defer(ephemeral=True)
-  if not await store.change(self.sid,r["status"],"pending",proof=proof):
-   return await i.followup.send("Submission changed; retry.",ephemeral=True)
-  updated=await store.one("SELECT * FROM submissions WHERE id=?",(self.sid,))
-  await update_review(updated)
-  await i.followup.send(
-   f"Proof saved for PB #{self.sid}. Staff can review it now.",
-   ephemeral=True
-  )
+  await save_interaction_proof(i,r,attachment.url)
 
 
 class ProofUploadView(ui.View):
@@ -2006,6 +2250,12 @@ async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
  except discord.HTTPException:return await i.response.send_message("Staff review channel not available.",ephemeral=True)
 
  await i.response.defer(thinking=True,ephemeral=True)
+ if discord_attachment_key(proof):
+  try:
+   async with aiohttp.ClientSession() as session:
+    proof=await archive_discord_proof(DBPATH,session,proof)
+  except (ProofUnavailable,aiohttp.ClientError,TimeoutError,EOFError,OSError):
+   return await i.followup.send("Couldn’t archive that upload. Reattach the original proof.",ephemeral=True)
  names=", ".join(m.display_name for m in members)
  member_ids=",".join(str(m.id) for m in members)
  sid=await store.add(i.guild_id,i.user.id,cat,act,variant,names,member_ids,ms,normalized_date,proof)
@@ -2213,25 +2463,24 @@ async def pbsubmit(i:discord.Interaction):
 async def mypbs(i:discord.Interaction):
  await show_my_pbs(i)
 
-@bot.tree.command(name="pbproof",description="Attach proof to your pending submission")
+@bot.tree.command(name="pbproof",description="Attach PB proof or let staff replace proof on an approved PB")
 @app_commands.guild_only()
 @app_commands.describe(submission_id="Your PB submission number",url="Proof URL (optional)",attachment="Screenshot or video clip (optional)")
 async def pbproof(i:discord.Interaction,submission_id:int,url:str="",attachment:discord.Attachment=None):
  r=await store.one("SELECT * FROM submissions WHERE id=? AND guild=?",(submission_id,i.guild_id))
  if not r or (r["submitter"]!=i.user.id and not is_staff(i)):
   return await i.response.send_message("PB not found or not yours.",ephemeral=True)
- if r["status"] not in ("pending","awaiting_proof"):
+ if r["status"]=="approved" and not is_staff(i):
+  return await i.response.send_message("Ask staff to replace proof for an approved PB.",ephemeral=True)
+ if r["status"] not in ("pending","awaiting_proof","approved"):
   return await i.response.send_message("PB is already resolved.",ephemeral=True)
  proof=attachment.url if attachment else url.strip()
  if not valid_url(proof):return await i.response.send_message("Provide a valid URL or attach an image/video.",ephemeral=True)
  if attachment and not (attachment.content_type or "").startswith(("image/","video/")):
   return await i.response.send_message("Only image/video files accepted.",ephemeral=True)
- await i.response.defer(ephemeral=True)
- if not await store.change(submission_id,r["status"],"pending",proof=proof):
-  return await i.followup.send("Submission changed; retry.",ephemeral=True)
- updated=await store.one("SELECT * FROM submissions WHERE id=?",(submission_id,))
- await update_review(updated)
- await i.followup.send(f"Proof saved for PB #{submission_id}. Staff can review it now.",ephemeral=True)
+ if attachment and not discord_attachment_key(proof):
+  return await i.response.send_message("Discord did not return a valid proof attachment URL.",ephemeral=True)
+ await save_interaction_proof(i,r,proof)
 
 @bot.tree.command(name="pbclear",description="Clear all Novus PB submissions and leaderboard records")
 @app_commands.guild_only()
