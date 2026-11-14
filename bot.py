@@ -156,6 +156,9 @@ def unique_team_results(results,limit=5):
 
 PUBLIC_PROOF_URLS={}
 PUBLIC_PROOF_LOCK=asyncio.Lock()
+PROOF_THREAD_LOCK=asyncio.Lock()
+PROOF_THREAD_NAME="PB Proof Archive"
+PROOF_THREAD_RETRY_AT={}
 PROOF_LINK_REFRESH_SECONDS=3*60*60
 
 def proof_text(r,label="Proof",*,omit=()):
@@ -343,7 +346,13 @@ class Store:
   CREATE TABLE IF NOT EXISTS panel_bosses(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS boss_board_messages(guild INTEGER NOT NULL,activity TEXT NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity));
   CREATE TABLE IF NOT EXISTS panel_snapshot(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
-  CREATE TABLE IF NOT EXISTS panel_footer(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);""")
+  CREATE TABLE IF NOT EXISTS panel_footer(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
+  CREATE TABLE IF NOT EXISTS proof_threads(guild INTEGER PRIMARY KEY,parent INTEGER NOT NULL,thread INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS proof_button_cards(guild INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,message));
+  CREATE TABLE IF NOT EXISTS proof_thread_messages(
+    guild INTEGER NOT NULL,proof TEXT NOT NULL,thread INTEGER NOT NULL,message INTEGER NOT NULL,
+    PRIMARY KEY(guild,proof)
+  );""")
   async with self.conn.execute("PRAGMA table_info(submissions)") as c:
    columns={row[1] async for row in c}
   if "member_ids" not in columns:
@@ -364,6 +373,24 @@ class Store:
   async with self.conn.execute(q,args) as c:return await c.fetchone()
  async def all(self,q,args=()):
   async with self.conn.execute(q,args) as c:return await c.fetchall()
+ async def save_proof_thread(self,guild,parent,thread):
+  async with self.lock:
+   await self.conn.execute("""INSERT INTO proof_threads VALUES(?,?,?) ON CONFLICT(guild)
+                    DO UPDATE SET parent=excluded.parent,thread=excluded.thread""",(guild,parent,thread))
+   await self.conn.commit()
+ async def save_proof_message(self,guild,proof,thread,message):
+  async with self.lock:
+   await self.conn.execute("""INSERT INTO proof_thread_messages VALUES(?,?,?,?) ON CONFLICT(guild,proof)
+                    DO UPDATE SET thread=excluded.thread,message=excluded.message""",(guild,proof,thread,message))
+   await self.conn.commit()
+ async def unmark_proof_button_card(self,guild,message):
+  async with self.lock:
+   await self.conn.execute("DELETE FROM proof_button_cards WHERE guild=? AND message=?",(guild,message))
+   await self.conn.commit()
+ async def mark_proof_button_card(self,guild,message):
+  async with self.lock:
+   await self.conn.execute("INSERT OR IGNORE INTO proof_button_cards VALUES(?,?)",(guild,message))
+   await self.conn.commit()
  async def add(self,g,u,cat,act,v,m,member_ids,ms,pb_date,p):
   v=canonical_raid_variant(cat,act,v)
   async with self.lock:
@@ -731,7 +758,8 @@ async def on_ready():
     await paced_startup_edit(message, content=f"## [↑ CLICK TO SCROLL TO THE TOP]({url})",allowed_mentions=discord.AllowedMentions.none())
    except discord.HTTPException:
     logging.exception("Failed to refresh PB scroll-to-top footer")
-  priority={"Inferno":0,"Araxxor":1,"Royal Titans":2}
+  proof_boards_ok=True
+  priority={"Demonic Brutus":-1,"Inferno":0,"Araxxor":1,"Royal Titans":2}
   for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
    if activity not in BOSSES and activity not in RAIDS:continue
@@ -740,7 +768,7 @@ async def on_ready():
     message=await ch.fetch_message(record["message"])
     saved=await write_linked_board(ch,guild.id,activity,message=message)
     await asyncio.sleep(1.4)
-    if activity in ("Inferno","Araxxor"):
+    if activity in ("Demonic Brutus","Inferno","Araxxor"):
      body=old_announcement_text(saved)
      view=ui.LayoutView.from_message(saved)
      controls=sum((getattr(item,"custom_id",None) or "").startswith("pb:proof:")
@@ -755,10 +783,16 @@ async def on_ready():
      logging.info("Refreshed raid team-size brackets for %s on Discord message %s",activity,message.id)
     if guild.id==NOVUS_GUILD_ID and activity=="Royal Titans":
      await verify_royal_titans_35_public(guild,ch,message.id)
-   except discord.HTTPException:
+   except (discord.HTTPException,aiosqlite.Error):
+    proof_boards_ok=False
     logging.exception("Failed to refresh PB icon for %s",activity)
-  await refresh_proof_snapshot(guild.id)
+  snapshot_ok=await refresh_proof_snapshot(guild.id)
   logging.info("Finished refreshing inline proof links for guild %s",guild.id)
+  if proof_boards_ok and snapshot_ok:
+   try:
+    await restore_staff_proof_cards(guild.id)
+   except aiosqlite.Error:
+    logging.exception("Could not read PB staff cards for migration")
 
  if not getattr(bot,"_proof_links_task",None):
   bot._proof_links_task=asyncio.create_task(refresh_live_proof_links())
@@ -1182,7 +1216,106 @@ def review_proof_media(message,filename):
  return None
 
 
+def is_proof_thread(thread,parent_id,guild_id):
+ return (
+  getattr(thread,"type",None)==discord.ChannelType.private_thread
+  and getattr(thread,"parent_id",None)==parent_id
+  and getattr(getattr(thread,"guild",None),"id",None)==guild_id
+ )
+
+
+async def proof_thread_for(guild_id):
+ parent=bot.get_channel(REVIEW_ID) or await bot.fetch_channel(REVIEW_ID)
+ if getattr(getattr(parent,"guild",None),"id",None)!=guild_id:
+  raise ProofUnavailable("PB review channel belongs to another server")
+ row=await store.one("SELECT * FROM proof_threads WHERE guild=?",(guild_id,))
+ if row and row["parent"]==parent.id:
+  try:
+   thread=bot.get_channel(row["thread"]) or await bot.fetch_channel(row["thread"])
+  except discord.NotFound:
+   thread=None
+  if thread is not None:
+   if not is_proof_thread(thread,parent.id,guild_id):
+    raise ProofUnavailable("Stored proof archive is not a private review thread")
+   return thread
+
+ def owned_archive(thread):
+  return (is_proof_thread(thread,parent.id,guild_id) and thread.name==PROOF_THREAD_NAME
+          and thread.owner_id==bot.user.id)
+
+ thread=next((t for t in parent.threads if owned_archive(t)),None)
+ if thread is None:
+  # Reuse a bot-owned thread even if a restart interrupted saving its ID.
+  async for candidate in parent.archived_threads(private=True,joined=True,limit=100):
+   if owned_archive(candidate):
+    thread=candidate
+    break
+ if thread is None:
+  thread=await parent.create_thread(name=PROOF_THREAD_NAME,type=discord.ChannelType.private_thread,
+                                     invitable=False,auto_archive_duration=60,
+                                     reason="Keep approved PB proof files off the staff cards")
+  logging.info("Created private PB Proof Archive thread %s under staff channel %s",thread.id,parent.id)
+ if not is_proof_thread(thread,parent.id,guild_id):
+  raise ProofUnavailable("Discord did not return the requested private thread")
+ await store.save_proof_thread(guild_id,parent.id,thread.id)
+ return thread
+
+
+async def cache_proof_from_thread(r,path):
+ if r["status"]!="approved" or r["review_channel"]!=REVIEW_ID or not REVIEW_ID:
+  return False
+ async with PROOF_THREAD_LOCK:
+  if PROOF_THREAD_RETRY_AT.get(r["guild"],0)>asyncio.get_running_loop().time():
+   return False
+  try:
+   thread=await proof_thread_for(r["guild"])
+   filename=proof_attachment_name(r,path)
+   row=await store.one("SELECT * FROM proof_thread_messages WHERE guild=? AND proof=?",
+                       (r["guild"],r["proof"]))
+   existing=None
+   if row and row["thread"]==thread.id:
+    try:
+     existing=await thread.fetch_message(row["message"])
+    except discord.NotFound:
+     pass
+   if existing and existing.author.id!=bot.user.id:
+    raise ProofUnavailable("Proof archive message is not owned by the bot")
+   attachment=next((a for a in existing.attachments if a.filename==filename),None) if existing else None
+   is_new=attachment is None
+   if is_new:
+    file=discord.File(path,filename=filename)
+    try:
+     existing=await thread.send(f"Approved PB #{r['id']}",file=file,silent=True,
+                                 allowed_mentions=discord.AllowedMentions.none())
+    finally:
+     file.close()
+    attachment=next((a for a in existing.attachments if a.filename==filename),None)
+    if attachment:
+     # Keep the reference even if the CDN has a transient error right after upload.
+     await store.save_proof_message(r["guild"],r["proof"],thread.id,existing.id)
+   key=discord_attachment_key(attachment.url) if attachment else None
+   if not key or key[0]!="attachments" or int(key[1])!=thread.id:
+    return False
+   if (is_new or not discord_attachment_key(PUBLIC_PROOF_URLS.get(r["proof"]))) and not await count_reachable_proof_images([attachment.url],allow_video=True):
+    logging.warning("Thread proof for PB #%s did not pass the CDN check",r["id"])
+    return False
+   return cache_public_attachment(r["proof"],attachment)
+  except (discord.Forbidden,ProofUnavailable) as exc:
+   PROOF_THREAD_RETRY_AT[r["guild"]]=asyncio.get_running_loop().time()+300
+   logging.warning("PB archive thread unavailable for guild %s (%s). Keeping the existing proof layout.",
+                   r["guild"],type(exc).__name__)
+  except (discord.HTTPException,OSError,aiosqlite.Error):
+   logging.exception("Could not refresh PB #%s from the archive thread",r["id"])
+  return False
+
+
 async def cache_proof_from_review(r,path):
+ if await cache_proof_from_thread(r,path):
+  return
+ await cache_legacy_review_proof(r,path)
+
+
+async def cache_legacy_review_proof(r,path):
  # Back public image links with the approved record's existing staff message.
  # The clickable link is to the signed image, not to the restricted channel.
  if r["status"]!="approved" or not r["review_channel"] or not r["review_message"]:
@@ -1199,6 +1332,7 @@ async def cache_proof_from_review(r,path):
   if existing is None:
    if len(message.attachments)>=10:
     return
+   await store.unmark_proof_button_card(r["guild"],r["review_message"])
    file=discord.File(path,filename=filename)
    try:
     message=await message.edit(view=Review(r,archived_filename=filename),
@@ -1215,6 +1349,71 @@ async def cache_proof_from_review(r,path):
    logging.warning("Discord did not return an attached image for PB #%s",r["id"])
  except (discord.HTTPException,OSError):
   logging.exception("Unable to refresh proof image for PB #%s",r["id"])
+
+
+async def restore_staff_proof_cards(guild_id):
+ # Remove a legacy tile only after the leaderboards and snapshot have been
+ # updated to point to the new thread copy. Files on disk are never removed.
+ rows=await store.all("""SELECT s.*,t.thread AS archive_thread FROM submissions s
+    LEFT JOIN proof_thread_messages t ON t.guild=s.guild AND t.proof=s.proof
+    LEFT JOIN proof_button_cards b ON b.guild=s.guild AND b.message=s.review_message
+    WHERE b.message IS NULL AND s.guild=? AND s.review_channel=? AND s.review_message IS NOT NULL
+    AND s.proof IS NOT NULL AND s.proof<>''
+    ORDER BY CASE WHEN s.id=71 THEN 0 ELSE 1 END,s.id""",(guild_id,REVIEW_ID))
+ if not rows:
+  return
+ try:
+  channel=bot.get_channel(REVIEW_ID) or await bot.fetch_channel(REVIEW_ID)
+ except discord.HTTPException:
+  logging.exception("Unable to read PB staff review channel")
+  return
+
+ updated=0
+ for r in rows:
+  path=archive_path(DBPATH,r["proof"])
+  external=not is_private_proof(r["proof"]) and valid_url(r["proof"])
+  if not path and not external:
+   continue
+  if path and not path.is_file():
+   continue
+  try:
+   msg=await channel.fetch_message(r["review_message"])
+   if msg.author.id!=bot.user.id:
+    continue
+   view=ui.LayoutView.from_message(msg)
+   if any(getattr(item,"custom_id",None)==f"pb:proof:view:{r['id']}" for item in view.walk_children()):
+    # An approved card can temporarily fall back to an attachment if the
+    # archive thread is unavailable. Keep it eligible for a later cleanup.
+    if not path or r["archive_thread"]:
+     await store.mark_proof_button_card(guild_id,msg.id)
+    continue
+   if path:
+    if not review_proof_media(msg,proof_attachment_name(r,path)):
+     continue
+    url=PUBLIC_PROOF_URLS.get(r["proof"])
+    key=discord_attachment_key(url)
+    if not key or int(key[1])!=r["archive_thread"] or proof_link_needs_refresh(
+        url,datetime.now(timezone.utc).timestamp()):
+     # Older tiles no longer on the leaderboard still get a thread copy.
+     # Defer removal to the next successful board/snapshot refresh.
+     if await cache_proof_from_thread(r,path):
+      logging.info("Staged an older PB #%s proof for the next staff card refresh",r["id"])
+     continue
+   fresh=await Review.make(r)
+   result=await msg.edit(view=fresh,allowed_mentions=discord.AllowedMentions.none(),
+                         **({"attachments":[]} if path else {}))
+   rendered=ui.LayoutView.from_message(result)
+   if (any(getattr(item,"custom_id",None)==f"pb:proof:view:{r['id']}" for item in rendered.walk_children())
+       and not any(isinstance(item,ui.File) for item in rendered.walk_children())):
+    await store.mark_proof_button_card(guild_id,msg.id)
+    updated+=1
+    if r["id"]==71:
+     logging.info("Verified PB #71 approved staff card: View Proof button present, file tile absent")
+  except discord.NotFound:
+   continue
+  except discord.HTTPException:
+   logging.exception("Could not restore View Proof on staff PB #%s",r["id"])
+ logging.info("PB staff proof card refresh complete for guild %s: restored=%s",guild_id,updated)
 
 
 async def write_linked_board(channel,g,activity,message=None,*,archived_only=False):
@@ -1244,11 +1443,12 @@ async def write_linked_board(channel,g,activity,message=None,*,archived_only=Fal
   return await message.edit(view=view,allowed_mentions=mentions,attachments=[])
 
 
-async def count_reachable_proof_images(urls):
+async def count_reachable_proof_images(urls,*,allow_video=False):
  async def probe(session,url):
   try:
    async with session.get(url,headers={"Range":"bytes=0-31"},allow_redirects=False) as response:
-    return response.status in (200,206) and response.content_type.startswith("image/")
+    kinds=("image/","video/") if allow_video else ("image/",)
+    return response.status in (200,206) and response.content_type.startswith(kinds)
   except (aiohttp.ClientError,asyncio.TimeoutError):
    return False
 
@@ -1266,6 +1466,7 @@ async def refresh_live_proof_links():
    except aiosqlite.Error:
     logging.exception("Unable to read PB boards for %s",guild.id)
     continue
+   proof_boards_ok=True
    for board in boards:
     activity=board["activity"]
     if activity not in BOSSES and activity not in RAIDS:
@@ -1274,11 +1475,13 @@ async def refresh_live_proof_links():
      channel=bot.get_channel(board["channel"]) or await bot.fetch_channel(board["channel"])
      await write_linked_board(channel,guild.id,activity,board["message"],archived_only=True)
     except (discord.HTTPException,OSError,aiosqlite.Error):
+     proof_boards_ok=False
      logging.exception("Unable to rotate proof links for %s",activity)
    try:
-    await refresh_proof_snapshot(guild.id)
+    if await refresh_proof_snapshot(guild.id) and proof_boards_ok:
+     await restore_staff_proof_cards(guild.id)
    except aiosqlite.Error:
-    logging.exception("Unable to read PB snapshot for %s",guild.id)
+    logging.exception("Unable to read PB snapshot or staff cards for %s",guild.id)
 
 
 class RaidBrowser(ui.LayoutView):
@@ -1609,16 +1812,7 @@ class Review(ui.LayoutView):
   elif is_private_proof(p):
    panel.add_item(ui.ActionRow(ProofButton(r["id"])))
   elif p and valid_url(p):
-   panel.add_item(
-    ui.TextDisplay(
-     "### Proof\n"
-     f"[Open submitted evidence]({p})"
-    )
-   )
-   if proof_looks_like_media(p):
-    gallery=ui.MediaGallery()
-    gallery.add_item(media=p,description="Submitted PB proof")
-    panel.add_item(gallery)
+   panel.add_item(ui.ActionRow(ProofButton(r["id"])))
   else:
    panel.add_item(
     ui.TextDisplay(
@@ -1802,7 +1996,7 @@ async def recover_existing_proofs():
 async def refresh_proof_snapshot(guild_id):
  tracked=await store.snapshot_panel(guild_id)
  if not tracked:
-  return
+  return True
  try:
   channel=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
   message=await channel.fetch_message(tracked["message"])
@@ -1816,8 +2010,10 @@ async def refresh_proof_snapshot(guild_id):
      await cache_proof_from_review(r,path)
    await paced_startup_edit(message,view=SnapshotPanel(leaders,recent),
                             allowed_mentions=discord.AllowedMentions.none())
+  return True
  except discord.HTTPException:
   logging.exception("Unable to refresh PB proof links on the snapshot")
+  return False
 
 
 async def show_record_proof(i,sid):

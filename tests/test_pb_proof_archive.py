@@ -205,8 +205,9 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
             message = SimpleNamespace(attachments=[], components=[], author=SimpleNamespace(id=5),
                                       edit=AsyncMock(return_value=published))
             channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
-            with patch.object(bot, "bot", SimpleNamespace(get_channel=lambda _: channel, user=SimpleNamespace(id=5))):
-                await bot.cache_proof_from_review(r, path)
+            with (patch.object(bot, "bot", SimpleNamespace(get_channel=lambda _: channel, user=SimpleNamespace(id=5))),
+                  patch.object(bot.store, "unmark_proof_button_card", new=AsyncMock())):
+                await bot.cache_legacy_review_proof(r, path)
                 edit = message.edit.await_args.kwargs
                 self.assertEqual(edit["attachments"][0].filename, filename)
                 components = [item for item in edit["view"].walk_children() if isinstance(item, bot.ui.File)]
@@ -215,7 +216,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
                 channel.fetch_message.return_value = SimpleNamespace(
                     attachments=[], components=published.components, author=message.author, edit=message.edit
                 )
-                await bot.cache_proof_from_review(r, path)
+                await bot.cache_legacy_review_proof(r, path)
                 message.edit.assert_awaited_once()
 
     def test_refreshes_signatures_before_expiration(self):
