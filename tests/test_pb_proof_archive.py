@@ -122,7 +122,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         ref = "archive:" + "a" * 32 + ".png"
         for proof in (URL, ref):
             text = bot.short_record(record(proof=proof), 0)
-            self.assertIn("/pbviewproof 1", text)
+            self.assertNotIn("/pbviewproof", text)
             self.assertNotIn(proof, text)
         self.assertIn("https://example.com/proof.png", bot.short_record(record(), 0))
 
@@ -134,10 +134,42 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
             for n, variant in enumerate(bot.RAIDS[activity], 1)
         ])
         self.assertLessEqual(board.total_children_count, 40)
-        self.assertIsInstance(board.children[-1].children[0], bot.BoardProofButton)
+        menus = [item for item in board.walk_children() if isinstance(item, bot.BoardProofSelect)]
+        self.assertEqual(len(menus), 1)
+        self.assertEqual(menus[0].item.options[0].label, "Solo · #1 · 14:32.60")
         self.assertTrue(board.is_persistent())
         badge = bot.ProofButton(8)
         self.assertEqual(badge.custom_id, "pb:proof:view:8")
         with patch.object(bot, "show_record_proof", new=AsyncMock()) as show:
             await badge.callback("interaction")
             show.assert_awaited_once_with("interaction", 8)
+
+    async def test_araxxor_proof_buttons_target_each_record_without_typing(self):
+        ref = "archive:" + "b" * 32 + ".png"
+        rows = [record(id=sid, proof=ref, ms=ms) for sid, ms in ((14, 43800), (11, 46200), (67, 51800))]
+        board = bot.BossLeaderboard("Araxxor", [("Standard", rows)])
+        buttons = list(board.children[-1].children)
+        self.assertEqual([button.item.label for button in buttons],
+                         ["Proof #1 · 0:43.80", "Proof #2 · 0:46.20", "Proof #3 · 0:51.80"])
+        self.assertEqual([button.sid for button in buttons], [14, 11, 67])
+        self.assertNotIn("/pbviewproof", str(board.to_components()))
+
+    async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
+        ref = "archive:" + "c" * 32 + ".png"
+        activity = "Chambers of Xeric"
+        variants = bot.RAIDS[activity]
+        board = bot.RaidLeaderboard(activity, [
+            (variant, [record(id=5*n+rank+1, activity=activity, variant=variant, proof=ref)
+                       for rank in range(5)])
+            for n, variant in enumerate(variants)
+        ])
+        self.assertLessEqual(board.total_children_count, 40)
+        menus = [item for item in board.walk_children() if isinstance(item, bot.BoardProofSelect)]
+        self.assertEqual([len(menu.item.options) for menu in menus], [25, 15])
+        original = menus[1]
+        match = original.template.fullmatch(original.custom_id)
+        restored = await bot.BoardProofSelect.from_custom_id(None, original.item, match)
+        restored._refresh_state(None, {"values": ["26"]})
+        with patch.object(bot, "show_record_proof", new=AsyncMock()) as show:
+            await restored.callback("interaction")
+            show.assert_awaited_once_with("interaction", 26)

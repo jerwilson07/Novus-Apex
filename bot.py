@@ -157,7 +157,7 @@ def unique_team_results(results,limit=5):
 def proof_text(r,label="↗ Proof"):
  proof=r["proof"]
  if is_private_proof(proof):
-  return f"`/pbviewproof {r['id']}`"
+  return ""
  return f"[{label}]({proof})" if proof and valid_url(proof) else ""
 
 def short_record(r,rank,include_variant=False):
@@ -466,7 +466,7 @@ intents=discord.Intents.default()
 class PB(commands.Bot):
  async def setup_hook(self):
   await store.open()
-  self.add_dynamic_items(ProofButton,BoardProofButton)
+  self.add_dynamic_items(ProofButton,BoardProofSelect,BoardProofButton)
   self.add_view(Home())
   self.add_view(BossDirectory())
   for r in await store.all("SELECT * FROM submissions WHERE status IN ('pending','awaiting_proof') AND review_message IS NOT NULL"):
@@ -702,7 +702,8 @@ async def on_ready():
     await paced_startup_edit(message, content=f"## [↑ CLICK TO SCROLL TO THE TOP]({url})",allowed_mentions=discord.AllowedMentions.none())
    except discord.HTTPException:
     logging.exception("Failed to refresh PB scroll-to-top footer")
-  for record in sorted(records,key=lambda record:record["activity"]!="Royal Titans"):
+  priority={"Araxxor":0,"Royal Titans":1}
+  for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
    if activity not in BOSSES and activity not in RAIDS:continue
    try:
@@ -710,6 +711,13 @@ async def on_ready():
     message=await ch.fetch_message(record["message"])
     view=await (BossLeaderboard.make(guild.id,activity) if activity in BOSSES else RaidLeaderboard.make(guild.id,activity))
     await paced_startup_edit(message, view=view,allowed_mentions=discord.AllowedMentions.none())
+    if activity=="Araxxor":
+     saved=await ch.fetch_message(message.id)
+     saved_view=ui.LayoutView.from_message(saved)
+     proof_buttons=sum((getattr(item,"custom_id",None) or "").startswith("pb:proof:view:")
+                       for item in saved_view.walk_children())
+     logging.info("Verified Araxxor board %s: clickable proof buttons=%s command text=%s",
+                  message.id,proof_buttons,"/pbviewproof" in old_announcement_text(saved))
     if activity in SHARED_SIZE_RAIDS:
      logging.info("Refreshed raid team-size brackets for %s on Discord message %s",activity,message.id)
     if guild.id==NOVUS_GUILD_ID and activity=="Royal Titans":
@@ -877,6 +885,11 @@ class SnapshotPanel(ui.LayoutView):
 
   self.add_item(records)
   self.add_item(recent_panel)
+  for row in board_proof_rows([
+   *((activity,results) for activity,results in raid_leaders.items()),
+   ("Recent",recent),
+  ],force_menu=True):
+   self.add_item(row)
 
  @classmethod
  async def make(cls,g):
@@ -1001,8 +1014,24 @@ def add_featured_ranking(panel, results, *, compact=False):
   panel.add_item(ui.TextDisplay("\n".join(remaining)))
 
 
-def has_archived_board_proof(blocks):
- return any(is_private_proof(r["proof"]) for _,results in blocks for r in results)
+def board_proof_rows(blocks,*,force_menu=False):
+ options={}
+ for variant,results in blocks:
+  for rank,r in enumerate(results,1):
+   if is_private_proof(r["proof"]):
+    title=r["activity"] if variant=="Recent" else variant
+    options.setdefault(r["id"],(title,rank,fmt(r["ms"])))
+ if not options:
+  return []
+ if not force_menu and len(blocks)==1 and len(options)<=5:
+  return [ui.ActionRow(*(ProofButton(sid,label=f"Proof #{rank} · {time}")
+                         for sid,(_,rank,time) in options.items()))]
+ entries=list(options.items())
+ chunks=[entries[offset:offset+25] for offset in range(0,len(entries),25)]
+ return [ui.ActionRow(BoardProofSelect(index,[
+  discord.SelectOption(label=f"{title} · #{rank} · {time}"[:100],value=str(sid))
+  for sid,(title,rank,time) in chunk
+ ],len(chunks))) for index,chunk in enumerate(chunks)]
 
 
 class BossLeaderboard(ui.LayoutView):
@@ -1025,8 +1054,8 @@ class BossLeaderboard(ui.LayoutView):
    add_featured_ranking(panel,results)
 
   self.add_item(panel)
-  if has_archived_board_proof(blocks):
-   self.add_item(ui.ActionRow(BoardProofButton()))
+  for row in board_proof_rows(blocks):
+   self.add_item(row)
 
  @classmethod
  async def make(cls,g,activity):
@@ -1059,8 +1088,10 @@ class RaidLeaderboard(ui.LayoutView):
 
   # The title uses 2 components and a populated featured bracket uses 7.
   # Keep every bracket on one message within Discord's 40-component limit.
-  proof_button=has_archived_board_proof(blocks)
-  compact=2+2*proof_button+sum(7 if results else 3 for _,results in blocks)>40
+  proof_rows=board_proof_rows(blocks)
+  compact=2+sum(row._total_count for row in proof_rows)+sum(7 if results else 3 for _,results in blocks)>40
+  for row in proof_rows:
+   self.add_item(row)
   for variant,results in blocks:
    panel=ui.Container(accent_colour=GOLD)
    panel.add_item(ui.TextDisplay(
@@ -1068,8 +1099,6 @@ class RaidLeaderboard(ui.LayoutView):
    ))
    add_featured_ranking(panel,results,compact=compact)
    self.add_item(panel)
-  if proof_button:
-   self.add_item(ui.ActionRow(BoardProofButton()))
 
  @classmethod
  async def make(cls,g,activity):
@@ -1178,6 +1207,8 @@ class RaidBrowser(ui.LayoutView):
 
   self.add_item(panel)
   self.add_item(rankings)
+  for row in board_proof_rows([(variant,results)]):
+   self.add_item(row)
 
  @classmethod
  async def make(cls,g,raid_index,variant_index):
@@ -1242,6 +1273,8 @@ class Browser(ui.LayoutView):
 
   self.add_item(panel)
   self.add_item(rankings)
+  for row in board_proof_rows(blocks):
+   self.add_item(row)
 
  @classmethod
  async def make(cls,g,cat,index):
@@ -1676,8 +1709,8 @@ async def show_record_proof(i,sid):
 
 
 class ProofButton(ui.DynamicItem[ui.Button],template=r"pb:proof:view:(?P<sid>[0-9]+)"):
- def __init__(self,sid):
-  super().__init__(ui.Button(label="View Proof",style=discord.ButtonStyle.secondary,
+ def __init__(self,sid,label="View Proof"):
+  super().__init__(ui.Button(label=label,style=discord.ButtonStyle.secondary,
                             custom_id=f"pb:proof:view:{sid}"))
   self.sid=sid
 
@@ -1687,6 +1720,25 @@ class ProofButton(ui.DynamicItem[ui.Button],template=r"pb:proof:view:(?P<sid>[0-
 
  async def callback(self,i):
   await show_record_proof(i,self.sid)
+
+
+class BoardProofSelect(ui.DynamicItem[ui.Select],template=r"pb:proof:pick:(?P<part>[0-9]+)"):
+ def __init__(self,index,options,pages=1):
+  placeholder="View Proof · Select a PB"
+  if pages>1:
+   placeholder+=f" ({index+1}/{pages})"
+  super().__init__(ui.Select(custom_id=f"pb:proof:pick:{index}",placeholder=placeholder,
+                             options=options,min_values=1,max_values=1))
+
+ @classmethod
+ async def from_custom_id(cls,interaction,item,match):
+  return cls(int(match["part"]),item.options)
+
+ async def callback(self,i):
+  values=self.item.values
+  if len(values)!=1 or values[0] not in {option.value for option in self.item.options}:
+   return await i.response.send_message("Select a PB from this list.",ephemeral=True)
+  await show_record_proof(i,int(values[0]))
 
 
 class BoardProofModal(ui.Modal,title="View PB Proof"):
