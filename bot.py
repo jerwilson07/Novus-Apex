@@ -249,6 +249,14 @@ ACTIVITY_EMOJIS={
 }
 
 ACTIVITY_EMOJI_CACHE={}
+PB_PODIUM_FALLBACK={1:"🏆",2:"🥈",3:"🥉"}
+
+
+def podium_icon(rank,guild_id):
+ if rank not in PB_PODIUM_FALLBACK:
+  return f"**{rank}.**"
+ name=f"novuspb{rank}"
+ return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
 
 async def fetch_activity_emojis(guild):
  try:
@@ -725,6 +733,10 @@ async def on_ready():
  # Retrieve actual emoji IDs, then update existing leaderboard messages in place.
  for guild in bot.guilds:
   await fetch_activity_emojis(guild)
+  loaded=[n for n in range(1,4) if podium_icon(n,guild.id)!=PB_PODIUM_FALLBACK[n]]
+  logging.info("Resolved Novus PB podium emojis for guild %s: %s",guild.id,loaded)
+  if 1 in loaded and (guild.id==NOVUS_GUILD_ID or guild.id==GUILD_ID):
+   asyncio.create_task(refresh_first_announcement_trophy_icons(guild.id))
   await resolve_royal_titans_35_partner(guild)
   if guild.id==NOVUS_GUILD_ID:
    asyncio.create_task(refresh_royal_titans_35_review_once())
@@ -744,7 +756,12 @@ async def on_ready():
    try:
     ch=bot.get_channel(home["channel"]) or await bot.fetch_channel(home["channel"])
     message=await ch.fetch_message(home["message"])
-    await paced_startup_edit(message, view=await Home.make(guild.id),allowed_mentions=discord.AllowedMentions.none())
+    view=await Home.make(guild.id)
+    await paced_startup_edit(message, view=view,allowed_mentions=discord.AllowedMentions.none())
+    confirmed=await ch.fetch_message(message.id)
+    body=old_announcement_text(confirmed)
+    live=[n for n in loaded if podium_icon(n,guild.id) in body]
+    logging.info("Verified overall PB Top 10 trophy emojis on message %s: %s",message.id,live)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
@@ -759,6 +776,7 @@ async def on_ready():
    except discord.HTTPException:
     logging.exception("Failed to refresh PB scroll-to-top footer")
   proof_boards_ok=True
+  boss_trophies=0
   priority={"Demonic Brutus":-1,"Inferno":0,"Araxxor":1,"Royal Titans":2}
   for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
@@ -767,6 +785,8 @@ async def on_ready():
     ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
     message=await ch.fetch_message(record["message"])
     saved=await write_linked_board(ch,guild.id,activity,message=message)
+    if activity in BOSSES and 1 in loaded:
+     boss_trophies+=old_announcement_text(saved).count(f"## {podium_icon(1,guild.id)} ")
     await asyncio.sleep(1.4)
     if activity in ("Demonic Brutus","Inferno","Araxxor"):
      body=old_announcement_text(saved)
@@ -787,6 +807,7 @@ async def on_ready():
     proof_boards_ok=False
     logging.exception("Failed to refresh PB icon for %s",activity)
   snapshot_ok=await refresh_proof_snapshot(guild.id)
+  logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
   logging.info("Finished refreshing inline proof links for guild %s",guild.id)
   if proof_boards_ok and snapshot_ok:
    try:
@@ -843,7 +864,7 @@ class RulesModal(ui.Modal,title="NOVUS | PB Rules"):
 
 
 class Home(ui.LayoutView):
- def __init__(self,points=None):
+ def __init__(self,points=None,*,guild_id=None):
   super().__init__(timeout=None)
   points=points or []
 
@@ -865,7 +886,7 @@ class Home(ui.LayoutView):
    points_lines.append("-# No approved PB points yet.")
   else:
    for index,entry in enumerate(points,1):
-    rank_display={1:"🏆",2:"🥈",3:"🥉"}.get(index,f"**{index}.**")
+    rank_display=podium_icon(index,guild_id)
     points_lines.append(
      f"{rank_display} <@{entry['member_id']}> · "
      f"**{entry['points']} pts** "
@@ -909,7 +930,7 @@ class Home(ui.LayoutView):
 
  @classmethod
  async def make(cls,g):
-  return cls(await calculate_pb_points(g))
+  return cls(await calculate_pb_points(g),guild_id=g)
 
 
 class SnapshotPanel(ui.LayoutView):
@@ -1031,7 +1052,7 @@ class BossDirectory(ui.LayoutView):
 
 
 
-def add_featured_ranking(panel, results, *, compact=False, omit=()):
+def add_featured_ranking(panel, results, *, compact=False, omit=(), boss=False):
  # Display one featured champion and keep the remaining places easy to scan.
  # No custom fonts or image cards: everything is native Discord Components V2.
  if not results:
@@ -1041,8 +1062,9 @@ def add_featured_ranking(panel, results, *, compact=False, omit=()):
   return
 
  champion=results[0]
+ champion_icon=podium_icon(1,champion["guild"]) if boss else MEDALS[0]
  champion_text=(
-  f"## {MEDALS[0]} {fmt(champion['ms'])}\n"
+  f"## {champion_icon} {fmt(champion['ms'])}\n"
   f"{players_with_proof(champion,omit=omit)}\n"
   f"-# Achieved {pb_date_label(champion['pb_date'])}"
  )
@@ -1113,7 +1135,7 @@ class BossLeaderboard(ui.LayoutView):
     panel.add_item(ui.Separator())
    if len(blocks)>1:
     panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   add_featured_ranking(panel,results)
+   add_featured_ranking(panel,results,boss=True)
 
   self.add_item(panel)
 
@@ -1621,7 +1643,7 @@ class Browser(ui.LayoutView):
     rankings.add_item(ui.Separator())
    if variant!="Standard":
     rankings.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   add_featured_ranking(rankings,results)
+   add_featured_ranking(rankings,results,boss=cat=="Bosses")
 
   shortcuts=ui.ActionRow()
   submit=ui.Button(label="Submit PB",style=discord.ButtonStyle.success)
@@ -2179,7 +2201,7 @@ def first_place_announcement(r, previous_leader, leaderboard_url=None):
   improvement=fmt(previous_leader["ms"]-r["ms"])
   comparison=f"-# Beat the previous #1 by **{improvement}**."
  lines=[
-  "## 🏆 NEW NOVUS #1",
+  f"## {podium_icon(1,r['guild'])} NEW NOVUS #1",
   f"**{clean(title)} · {clean(r['variant'])}**",
   f"## {fmt(r['ms'])}",
   names,
@@ -2211,7 +2233,7 @@ class FirstPlaceAnnouncementCard(ui.LayoutView):
   )
   panel.add_item(ui.Section(
    ui.TextDisplay(
-    "## 🏆 NEW NOVUS #1\n"
+    f"## {podium_icon(1,record['guild'])} NEW NOVUS #1\n"
     f"**{clean(record['activity'])} · {clean(record['variant'])}**\n"
     f"-# Achieved by {public_members(record)}"
    ),
@@ -2268,6 +2290,66 @@ def old_announcement_text(message):
  for component in getattr(message,"components",()) or ():
   walk(component)
  return "\n".join(chunks)
+
+
+FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )🏆(?= NEW NOVUS #1[ \t]*$)")
+
+
+def replace_first_trophy_heading(content,icon):
+ return FIRST_TROPHY_HEADING.sub(lambda match:match.group(1)+icon,content)
+
+
+async def refresh_first_announcement_trophy_icons(guild_id):
+ """Replace only the old trophy in bot-authored #1 posts, without reposting."""
+ icon=podium_icon(1,guild_id)
+ if not GENERAL_CHAT_ID or not bot.user or icon==PB_PODIUM_FALLBACK[1]:
+  return
+ op=f"first_announcements_novuspb1_v1_{guild_id}_{icon}"
+ try:
+  channel=bot.get_channel(GENERAL_CHAT_ID) or await bot.fetch_channel(GENERAL_CHAT_ID)
+  if getattr(getattr(channel,"guild",None),"id",None)!=guild_id:
+   return
+  async with store.lock:
+   await store.conn.execute("CREATE TABLE IF NOT EXISTS one_time_pb_migrations "
+                            "(name TEXT PRIMARY KEY, applied TEXT NOT NULL)")
+   await store.conn.commit()
+  if await store.one("SELECT name FROM one_time_pb_migrations WHERE name=?",(op,)):
+   return
+  changed=0
+  failed=0
+  after=datetime(2026,11,6,tzinfo=timezone.utc)
+  async for message in channel.history(limit=None,after=after):
+   if message.author.id!=bot.user.id:
+    continue
+   try:
+    if FIRST_TROPHY_HEADING.search(old_announcement_text(message)):
+     view=ui.LayoutView.from_message(message,timeout=None)
+     for item in view.walk_children():
+      if isinstance(item,ui.TextDisplay):
+       item.content=replace_first_trophy_heading(item.content,icon)
+     saved=await message.edit(view=view,allowed_mentions=discord.AllowedMentions.none())
+     verified=icon in old_announcement_text(saved)
+    elif FIRST_TROPHY_HEADING.search(message.content):
+     saved=await message.edit(content=replace_first_trophy_heading(message.content,icon),
+                              allowed_mentions=discord.AllowedMentions.none())
+     verified=icon in saved.content
+    else:
+     continue
+    if verified:
+     changed+=1
+    else:
+     failed+=1
+    await asyncio.sleep(1.4)
+   except (discord.HTTPException,ValueError):
+    failed+=1
+    logging.exception("Could not edit trophy on #1 announcement %s",message.id)
+  if not failed:
+   async with store.lock:
+    await store.conn.execute("INSERT OR IGNORE INTO one_time_pb_migrations(name,applied) VALUES(?,?)",(op,now()))
+    await store.conn.commit()
+  logging.info("Novus #1 announcement trophy refresh complete: changed=%s failed=%s",changed,failed)
+ except (discord.HTTPException,aiosqlite.Error):
+  logging.exception("Could not refresh existing #1 announcement trophy icons")
 
 
 def match_legacy_first_post(message,approved):
