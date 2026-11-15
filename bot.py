@@ -761,12 +761,12 @@ async def on_ready():
     confirmed=await ch.fetch_message(message.id)
     body=old_announcement_text(confirmed)
     live=[n for n in loaded if podium_icon(n,guild.id) in body]
-    standings=next((item.content for item in ui.LayoutView.from_message(confirmed).walk_children()
-                    if isinstance(item,ui.TextDisplay) and item.content.startswith("### TOP 10")), "")
+    standings=body
     podium_rows=sum(line.startswith("### ") and "<@" in line for line in standings.splitlines())
     scoring_footer=standings.endswith("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt")
-    logging.info("Verified overall PB Top 10 on message %s: trophy emojis=%s larger podium rows=%s scoring footer=%s",
-                 message.id,live,podium_rows,scoring_footer)
+    single_heading=body.splitlines().count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in body
+    logging.info("Verified overall PB Top 10 on message %s: trophy emojis=%s larger podium rows=%s scoring footer=%s single heading=%s",
+                 message.id,live,podium_rows,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
@@ -878,11 +878,11 @@ class Home(ui.LayoutView):
   banner.add_item(media=PB_BANNER_URL)
   hero.add_item(banner)
   hero.add_item(ui.TextDisplay(
-   "## ✦ NOVUS · PERSONAL BESTS"
+   "## ✦ NOVUS TOP 10"
   ))
   hero.add_item(ui.Separator())
 
-  points_lines=["### TOP 10"]
+  points_lines=[]
 
   if not points:
    points_lines.append("-# No approved PB points yet.")

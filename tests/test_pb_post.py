@@ -32,8 +32,9 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
             child.content for child in panel.children
             if isinstance(child, bot.ui.TextDisplay)
         )
-        self.assertIn("NOVUS · PERSONAL BESTS", text)
-        self.assertIn("TOP 10", text)
+        self.assertEqual(text.splitlines().count("## ✦ NOVUS TOP 10"), 1)
+        self.assertNotIn("### TOP 10", text)
+        self.assertNotIn("PERSONAL BESTS", text)
         self.assertIn("🏆 <@123> · **20 pts**", text)
         self.assertIn("🥈 <@456> · **8 pts**", text)
         actions = [
@@ -50,11 +51,12 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
     async def test_pbpost_sends_exact_same_home_view_once_and_keeps_main_board(self):
         message = SimpleNamespace(id=100, jump_url="https://discord.com/channels/123/456/100")
         channel = SimpleNamespace(send=AsyncMock(return_value=message))
-        current = bot.Home([
+        points = [
             {"member_id": 123, "points": 5, "firsts": 1, "seconds": 0, "thirds": 0}
-        ])
+        ]
+        current = bot.Home(points, guild_id=123)
         with (
-            patch.object(bot.Home, "make", new_callable=AsyncMock, return_value=current) as make,
+            patch.object(bot, "calculate_pb_points", new_callable=AsyncMock, return_value=points) as calculate,
             patch.object(bot.store, "set_panel", new_callable=AsyncMock) as set_panel,
             patch.object(bot.store, "set_boss_board", new_callable=AsyncMock) as set_boss_board,
             patch.object(bot.store, "clear_boss_boards", new_callable=AsyncMock) as clear_boards,
@@ -63,10 +65,13 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, message)
         self.assertEqual(count, 1)
-        make.assert_awaited_once_with(123)
+        calculate.assert_awaited_once_with(123)
         channel.send.assert_awaited_once()
         kwargs = channel.send.await_args.kwargs
-        self.assertIs(kwargs["view"], current)
+        self.assertEqual(kwargs["view"].to_components(), current.to_components())
+        text = str(kwargs["view"].to_components())
+        self.assertEqual(text.count("## ✦ NOVUS TOP 10"), 1)
+        self.assertNotIn("### TOP 10", text)
         self.assertFalse(kwargs["allowed_mentions"].everyone)
         self.assertFalse(kwargs["allowed_mentions"].users)
         self.assertFalse(kwargs["allowed_mentions"].roles)

@@ -30,13 +30,13 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
                   for i in range(1, 11)]
         view = bot.Home(points, guild_id=123)
         standings = next(item.content for item in view.walk_children()
-                         if isinstance(item, bot.ui.TextDisplay) and item.content.startswith("### TOP 10"))
+                         if isinstance(item, bot.ui.TextDisplay) and " · **" in item.content)
         lines = standings.splitlines()
         for i in range(1, 4):
-            self.assertTrue(lines[i].startswith(f"### {EMOJIS[f'novuspb{i}']} <@{i}>"))
+            self.assertTrue(lines[i-1].startswith(f"### {EMOJIS[f'novuspb{i}']} <@{i}>"))
         for i in range(4, 11):
-            self.assertTrue(lines[i].startswith(f"**{i}.** <@{i}>"))
-        self.assertEqual(lines[11:], ["", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"])
+            self.assertTrue(lines[i-1].startswith(f"**{i}.** <@{i}>"))
+        self.assertEqual(lines[10:], ["", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"])
 
     def test_boss_champions_use_custom_icon_but_lower_and_raids_unchanged(self):
         items = [record(id=i, member_ids=str(i), ms=1000*i) for i in range(1, 4)]
