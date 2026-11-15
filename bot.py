@@ -761,7 +761,12 @@ async def on_ready():
     confirmed=await ch.fetch_message(message.id)
     body=old_announcement_text(confirmed)
     live=[n for n in loaded if podium_icon(n,guild.id) in body]
-    logging.info("Verified overall PB Top 10 trophy emojis on message %s: %s",message.id,live)
+    standings=next((item.content for item in ui.LayoutView.from_message(confirmed).walk_children()
+                    if isinstance(item,ui.TextDisplay) and item.content.startswith("### TOP 10")), "")
+    podium_rows=sum(line.startswith("### ") and "<@" in line for line in standings.splitlines())
+    scoring_footer=standings.endswith("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt")
+    logging.info("Verified overall PB Top 10 on message %s: trophy emojis=%s larger podium rows=%s scoring footer=%s",
+                 message.id,live,podium_rows,scoring_footer)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
@@ -877,22 +882,21 @@ class Home(ui.LayoutView):
   ))
   hero.add_item(ui.Separator())
 
-  points_lines=[
-   "### TOP 10",
-   "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt",
-  ]
+  points_lines=["### TOP 10"]
 
   if not points:
    points_lines.append("-# No approved PB points yet.")
   else:
    for index,entry in enumerate(points,1):
     rank_display=podium_icon(index,guild_id)
+    podium_heading="### " if index<=3 else ""
     points_lines.append(
-     f"{rank_display} <@{entry['member_id']}> · "
+     f"{podium_heading}{rank_display} <@{entry['member_id']}> · "
      f"**{entry['points']} pts** "
      f"- ({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)"
     )
 
+  points_lines.extend(("", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"))
   hero.add_item(
    ui.TextDisplay("\n".join(points_lines))
   )

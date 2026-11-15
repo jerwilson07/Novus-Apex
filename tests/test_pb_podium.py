@@ -25,6 +25,19 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"**{i}.** <@{i}>", content)
         self.assertEqual(bot.podium_icon(1, 999), "🏆")
 
+    def test_only_top_three_are_larger_and_scoring_follows_the_last_entry(self):
+        points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
+                  for i in range(1, 11)]
+        view = bot.Home(points, guild_id=123)
+        standings = next(item.content for item in view.walk_children()
+                         if isinstance(item, bot.ui.TextDisplay) and item.content.startswith("### TOP 10"))
+        lines = standings.splitlines()
+        for i in range(1, 4):
+            self.assertTrue(lines[i].startswith(f"### {EMOJIS[f'novuspb{i}']} <@{i}>"))
+        for i in range(4, 11):
+            self.assertTrue(lines[i].startswith(f"**{i}.** <@{i}>"))
+        self.assertEqual(lines[11:], ["", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"])
+
     def test_boss_champions_use_custom_icon_but_lower_and_raids_unchanged(self):
         items = [record(id=i, member_ids=str(i), ms=1000*i) for i in range(1, 4)]
         blocks = [("Standard", items)]
