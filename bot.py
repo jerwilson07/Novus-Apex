@@ -255,6 +255,7 @@ ACTIVITY_EMOJIS={
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"🥈",3:"🥉"}
 PB_FEATURED_HEADING="# "
+PB_TOP10_SCORING="-# *1st +5 · 2nd +3 · 3rd +1*"
 
 
 def podium_icon(rank,guild_id):
@@ -771,19 +772,18 @@ async def on_ready():
     body=old_announcement_text(confirmed)
     standings=body.splitlines()
     live=[n for n in loaded if any(
-     line==f"{PB_FEATURED_HEADING}{podium_icon(n,guild.id)}"
-     and re.fullmatch(r"<@[0-9]+> · \*\*[0-9]+ pts\*\*",details)
-     for line,details in zip(standings,standings[1:])
+     re.fullmatch(rf"{re.escape(podium_icon(n,guild.id))} <@[0-9]+> · \*\*[0-9]+ pts\*\*",line)
+     for line in standings
     )]
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
     muted_breakdowns=sum(
-     re.fullmatch(r"-# \*\([0-9]+ first · [0-9]+ second · [0-9]+ third\)\*",line) is not None
+     re.fullmatch(r"-# \*1st ×[0-9]+ · 2nd ×[0-9]+ · 3rd ×[0-9]+\*",line) is not None
      for line in standings
     )
-    scoring_footer=body.endswith("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*")
+    scoring_footer=bool(standings and standings[-1]==PB_TOP10_SCORING)
     single_heading=standings.count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in standings
-    logging.info("Verified overall PB Top 10 on message %s: large left trophies with normal-sized details=%s numbered ranks=%s muted italic placement breakdowns=%s italic scoring footer=%s single heading=%s",
+    logging.info("Verified overall PB Top 10 on message %s: inline left trophies with normal-sized details=%s numbered ranks=%s compact muted placement breakdowns=%s compact muted scoring footer=%s single heading=%s",
                  message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
@@ -933,18 +933,14 @@ class Home(ui.LayoutView):
   else:
    for index,entry in enumerate(points,1):
     rank_display=podium_icon(index,guild_id)
-    details=(
-     f"<@{entry['member_id']}> · **{entry['points']} pts**\n"
-     f"-# *({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)*"
+    points_lines.append(
+     f"{rank_display} <@{entry['member_id']}> · **{entry['points']} pts**\n"
+     f"-# *1st ×{entry['firsts']} · 2nd ×{entry['seconds']} · 3rd ×{entry['thirds']}*"
     )
-    if index<=3:
-     hero.add_item(ui.TextDisplay(f"{PB_FEATURED_HEADING}{rank_display}\n{details}"))
-    else:
-     points_lines.append(f"{rank_display} {details}")
 
   if points_lines:
    points_lines.append("")
-  points_lines.append("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*")
+  points_lines.append(PB_TOP10_SCORING)
   hero.add_item(
    ui.TextDisplay("\n".join(points_lines))
   )
