@@ -523,7 +523,7 @@ intents=discord.Intents.default()
 class PB(commands.Bot):
  async def setup_hook(self):
   await store.open()
-  self.add_dynamic_items(ProofButton,BoardProofSelect,BoardProofButton)
+  self.add_dynamic_items(BoardProofSelect,BoardProofButton)
   self.add_view(Home())
   self.add_view(BossDirectory())
   for r in await store.all("SELECT * FROM submissions WHERE status IN ('pending','awaiting_proof') AND review_message IS NOT NULL"):
@@ -2045,16 +2045,21 @@ async def refresh_proof_snapshot(guild_id):
 async def show_record_proof(i,sid):
  if i.guild_id is None or not 0<sid<2**63:
   return await i.response.send_message("PB not found.",ephemeral=True)
- record=await store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(i.guild_id,sid))
+ # Acknowledge before waiting on SQLite or fetching an old attachment.
+ await i.response.defer(ephemeral=True,thinking=True)
+ try:
+  record=await store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(i.guild_id,sid))
+ except aiosqlite.Error:
+  logging.exception("Unable to look up proof for PB #%s",sid)
+  return await i.followup.send("Proof is temporarily unavailable. Try again in a moment.",ephemeral=True)
  if not record or (record["status"]!="approved"
                    and record["submitter"]!=i.user.id and not is_staff(i)):
-  return await i.response.send_message("PB not found or not available to you.",ephemeral=True)
+  return await i.followup.send("PB not found or not available to you.",ephemeral=True)
  proof=record["proof"]
  if not is_private_proof(proof):
   if proof and valid_url(proof):
-   return await i.response.send_message(f"Proof for PB #{sid}: <{proof}>",ephemeral=True)
-  return await i.response.send_message("No proof was saved for this PB.",ephemeral=True)
- await i.response.defer(ephemeral=True,thinking=True)
+   return await i.followup.send(f"Proof for PB #{sid}: <{proof}>",ephemeral=True)
+  return await i.followup.send("No proof was saved for this PB.",ephemeral=True)
  if discord_attachment_key(proof):
   try:
    async with aiohttp.ClientSession() as session:
@@ -2084,19 +2089,30 @@ async def show_record_proof(i,sid):
   await i.followup.send("Discord couldn’t deliver this proof. Try again in a moment.",ephemeral=True)
 
 
-class ProofButton(ui.DynamicItem[ui.Button],template=r"pb:proof:view:(?P<sid>[0-9]+)"):
+PROOF_BUTTON_ID=re.compile(r"pb:proof:view:([0-9]{1,19})")
+
+
+class ProofButton(ui.Button):
  def __init__(self,sid,label="View Proof"):
-  super().__init__(ui.Button(label=label,style=discord.ButtonStyle.secondary,
-                            custom_id=f"pb:proof:view:{sid}"))
-  self.sid=sid
+  super().__init__(label=label,style=discord.ButtonStyle.secondary,
+                   custom_id=f"pb:proof:view:{sid}")
 
- @classmethod
- async def from_custom_id(cls,interaction,item,match):
-  return cls(int(match["sid"]))
+ def is_dispatchable(self):
+  # Discord sends the click normally. Route it in on_interaction rather
+  # than registering it with the temporary view that rendered the button.
+  return False
 
- async def callback(self,i):
-  await show_record_proof(i,self.sid)
 
+@bot.event
+async def on_interaction(i):
+ if i.type!=discord.InteractionType.component or not isinstance(i.data,dict):
+  return
+ if i.data.get("component_type")!=discord.ComponentType.button.value:
+  return
+ match=PROOF_BUTTON_ID.fullmatch(i.data.get("custom_id") or "")
+ if not match or i.message is None or bot.user is None or i.message.author.id!=bot.user.id:
+  return
+ await show_record_proof(i,int(match[1]))
 
 class BoardProofSelect(ui.DynamicItem[ui.Select],template=r"pb:proof:pick:(?P<part>[0-9]+)"):
  def __init__(self,index,options,pages=1):

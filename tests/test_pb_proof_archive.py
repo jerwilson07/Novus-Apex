@@ -107,7 +107,9 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
               patch.object(bot.store, "one", lookup)):
             await bot.show_record_proof(i, 1)
             self.assertEqual(lookup.await_args.args[-1], (123, 1))
-            i.response.defer.assert_not_awaited()
+            i.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+            i.followup.send.assert_awaited_once_with("PB not found or not available to you.", ephemeral=True)
+            i.followup.send.reset_mock()
             lookup.return_value = record(proof=ref, status="approved")
             dst = archive.archive_path(bot.DBPATH, ref)
             dst.parent.mkdir()

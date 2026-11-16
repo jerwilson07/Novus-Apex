@@ -103,6 +103,38 @@ class ProofThreadTests(unittest.IsolatedAsyncioTestCase):
             for proof in ("https://example.com/proof.png", f"archive:{1:032x}.png"):
                 view = bot.Review(record(status=status, proof=proof))
                 buttons = [i for i in view.walk_children() if isinstance(i, bot.ProofButton)]
-                self.assertEqual([i.item.label for i in buttons], ["View Proof"])
+                self.assertEqual([i.label for i in buttons], ["View Proof"])
                 self.assertFalse(any(isinstance(i, (bot.ui.File, bot.ui.MediaGallery))
                                      for i in view.walk_children()))
+
+
+    async def test_existing_view_proof_buttons_use_the_global_event(self):
+        for sid in (95, 96):
+            message = NS(author=NS(id=5))
+            i = NS(type=bot.discord.InteractionType.component, message=message,
+                   data={"component_type": 2, "custom_id": f"pb:proof:view:{sid}"})
+            with (patch.object(bot, "bot", NS(user=NS(id=5))),
+                  patch.object(bot, "show_record_proof", new=AsyncMock()) as show):
+                await bot.on_interaction(i)
+                show.assert_awaited_once_with(i, sid)
+
+    async def test_global_event_ignores_other_apps_and_other_components(self):
+        with (patch.object(bot, "bot", NS(user=NS(id=5))),
+              patch.object(bot, "show_record_proof", new=AsyncMock()) as show):
+            for author, kind, custom_id in (
+                (9, 2, "pb:proof:view:95"),
+                (5, 3, "pb:proof:view:95"),
+                (5, 2, "pb:review:approve:95"),
+            ):
+                await bot.on_interaction(NS(
+                    type=bot.discord.InteractionType.component,
+                    message=NS(author=NS(id=author)),
+                    data={"component_type": kind, "custom_id": custom_id},
+                ))
+            show.assert_not_awaited()
+
+    def test_rendered_proof_button_keeps_legacy_id_without_a_view_callback(self):
+        button = bot.ProofButton(95)
+        self.assertEqual(button.custom_id, "pb:proof:view:95")
+        self.assertEqual(button.to_component_dict()["custom_id"], button.custom_id)
+        self.assertFalse(button.is_dispatchable())
