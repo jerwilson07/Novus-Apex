@@ -254,6 +254,7 @@ ACTIVITY_EMOJIS={
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
 PB_FEATURED_HEADING="# "
+PB_TOP10_PODIUM_HEADING="## "
 PB_PLACEMENT_POINTS=(5,3,1)
 
 
@@ -785,7 +786,7 @@ async def on_ready():
     body=old_announcement_text(confirmed)
     standings=body.splitlines()
     live=[n for n in loaded if any(
-     re.fullmatch(rf"{re.escape(PB_FEATURED_HEADING+podium_icon(n,guild.id))} <@[0-9]+> · \*\*[0-9]+ pts\*\*",line)
+     re.fullmatch(rf"{re.escape(PB_TOP10_PODIUM_HEADING+podium_icon(n,guild.id))} <@[0-9]+> · \*\*[0-9]+ pts\*\*",line)
      for line in standings
     )]
     numbered_rows=[int(match[1]) for line in standings
@@ -797,7 +798,7 @@ async def on_ready():
     muted_breakdowns=sum(re.fullmatch(count_pattern,line) is not None for line in standings)
     scoring_footer=bool(standings and standings[-1]==top10_trophy_subtext(guild.id,PB_PLACEMENT_POINTS,scoring=True))
     single_heading=standings.count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in standings
-    logging.info("Verified overall PB Top 10 on message %s: inline trophies with large podium names=%s numbered ranks=%s muted trophy counts with regular x labels=%s labeled trophy scoring footer with regular points=%s single heading=%s",
+    logging.info("Verified overall PB Top 10 on message %s: inline trophies with medium podium headings=%s numbered ranks=%s muted trophy counts with regular x labels=%s labeled trophy scoring footer with regular points=%s single heading=%s",
                  message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
@@ -960,7 +961,7 @@ class Home(ui.LayoutView):
   else:
    for index,entry in enumerate(points,1):
     rank_display=podium_icon(index,guild_id)
-    heading=PB_FEATURED_HEADING if index<=3 else ""
+    heading=PB_TOP10_PODIUM_HEADING if index<=3 else ""
     breakdown=top10_trophy_subtext(guild_id,(entry["firsts"],entry["seconds"],entry["thirds"]))
     points_lines.append(
      f"{heading}{rank_display} <@{entry['member_id']}> · **{entry['points']} pts**\n{breakdown}"
