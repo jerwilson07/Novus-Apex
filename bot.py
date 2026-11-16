@@ -256,8 +256,6 @@ ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"🥈",3:"🥉"}
 PB_FEATURED_HEADING="# "
 PB_PLACEMENT_POINTS=(5,3,1)
-PB_TOP10_SMALL_DIGITS="⁰¹²³⁴⁵⁶⁷⁸⁹"
-PB_TOP10_SMALL_NUMBERS=str.maketrans("0123456789+",PB_TOP10_SMALL_DIGITS+"⁺")
 
 
 def podium_icon(rank,guild_id):
@@ -270,7 +268,7 @@ def top10_trophy_subtext(guild_id,values,*,scoring=False):
  prefix="Scoring · " if scoring else ""
  parts=(
   f"{podium_icon(rank,guild_id)} "
-  + (f"+{value}".translate(PB_TOP10_SMALL_NUMBERS) if scoring else f"x {value}")
+  + (f"- +{value} {'pt' if value==1 else 'pts'}" if scoring else f"x {value}")
   for rank,value in enumerate(values,1)
  )
  return "-# *"+prefix+" · ".join(parts)+"*"
@@ -795,7 +793,7 @@ async def on_ready():
     muted_breakdowns=sum(re.fullmatch(count_pattern,line) is not None for line in standings)
     scoring_footer=bool(standings and standings[-1]==top10_trophy_subtext(guild.id,PB_PLACEMENT_POINTS,scoring=True))
     single_heading=standings.count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in standings
-    logging.info("Verified overall PB Top 10 on message %s: inline trophies with large podium names=%s numbered ranks=%s muted trophy counts with regular x labels=%s labeled trophy scoring footer=%s single heading=%s",
+    logging.info("Verified overall PB Top 10 on message %s: inline trophies with large podium names=%s numbered ranks=%s muted trophy counts with regular x labels=%s labeled trophy scoring footer with regular points=%s single heading=%s",
                  message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
