@@ -789,10 +789,11 @@ async def on_ready():
     live=[n for n in loaded if urlparse(podium_trophy_url(n,guild.id) or "").path in thumbnail_paths]
     standings=body
     podium_rows=sum(line.startswith("### ") and "<@" in line for line in standings.splitlines())
-    scoring_footer=standings.endswith("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt")
+    scoring_footer=standings.endswith("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*")
+    italic_breakdowns=len(re.findall(r"\*\([0-9]+ first · [0-9]+ second · [0-9]+ third\)\*",standings))
     single_heading=body.splitlines().count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in body
-    logging.info("Verified overall PB Top 10 on message %s: large trophy thumbnails=%s larger podium rows=%s scoring footer=%s single heading=%s",
-                 message.id,live,podium_rows,scoring_footer,single_heading)
+    logging.info("Verified overall PB Top 10 on message %s: large trophy thumbnails=%s larger podium rows=%s italic placement breakdowns=%s italic scoring footer=%s single heading=%s",
+                 message.id,live,podium_rows,italic_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
@@ -941,7 +942,7 @@ class Home(ui.LayoutView):
   else:
    for index,entry in enumerate(points,1):
     trophy_url=podium_trophy_url(index,guild_id)
-    breakdown=f"({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)"
+    breakdown=f"*({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)*"
     if trophy_url:
      hero.add_item(ui.Section(
       ui.TextDisplay(
@@ -962,7 +963,7 @@ class Home(ui.LayoutView):
 
   if points_lines:
    points_lines.append("")
-  points_lines.append("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt")
+  points_lines.append("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*")
   hero.add_item(
    ui.TextDisplay("\n".join(points_lines))
   )

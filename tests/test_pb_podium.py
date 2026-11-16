@@ -30,7 +30,8 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
                               if isinstance(item, bot.ui.TextDisplay))
         for rank in range(4, 11):
             self.assertIn(f"**{rank}.** <@{rank}>", standings)
-        self.assertTrue(standings.endswith("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"))
+        self.assertEqual(standings.count("*(1 first · 0 second · 0 third)*"), 10)
+        self.assertTrue(standings.endswith("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*"))
         self.assertLessEqual(len(view.children[0].children), 10)
 
     def test_missing_trophy_keeps_the_podium_order(self):
