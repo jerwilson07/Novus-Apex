@@ -254,7 +254,7 @@ ACTIVITY_EMOJIS={
 
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"🥈",3:"🥉"}
-PB_HOME_PODIUM_HEADING="# "
+PB_FEATURED_HEADING="# "
 
 
 def podium_icon(rank,guild_id):
@@ -771,7 +771,7 @@ async def on_ready():
     body=old_announcement_text(confirmed)
     standings=body.splitlines()
     live=[n for n in loaded if any(
-     line.startswith(f"{PB_HOME_PODIUM_HEADING}{podium_icon(n,guild.id)} <@") for line in standings
+     line.startswith(f"{PB_FEATURED_HEADING}{podium_icon(n,guild.id)} <@") for line in standings
     )]
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
@@ -840,7 +840,7 @@ async def on_ready():
     proof_boards_ok=False
     first_slot_issues.append(f"{activity} (refresh failed)")
     logging.exception("Failed to refresh PB icon for %s",activity)
-  logging.info("NOVUS #1 board verification: %s occupied slots with green badges; issues=%s",
+  logging.info("NOVUS #1 board verification: %s occupied slots with largest trophy headings and green badges; issues=%s",
                verified_first_slots,first_slot_issues)
   snapshot_ok=await refresh_proof_snapshot(guild.id)
   if snapshot_ok and 1 in loaded:
@@ -931,7 +931,7 @@ class Home(ui.LayoutView):
   else:
    for index,entry in enumerate(points,1):
     rank_display=podium_icon(index,guild_id)
-    heading=PB_HOME_PODIUM_HEADING if index<=3 else ""
+    heading=PB_FEATURED_HEADING if index<=3 else ""
     row=(
      f"{heading}{rank_display} <@{entry['member_id']}> · **{entry['points']} pts**\n"
      f"-# *({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)*"
@@ -998,7 +998,7 @@ class SnapshotPanel(ui.LayoutView):
    if results:
     champion=results[0]
     records.add_item(first_place_section(
-     champion,heading+"\n"+"## "+short_record(champion,0,include_variant=True,omit=omit),
+     champion,heading+"\n"+PB_FEATURED_HEADING+short_record(champion,0,include_variant=True,omit=omit),
     ))
     if results[1:]:
      records.add_item(ui.TextDisplay("\n".join(
@@ -1150,7 +1150,7 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), heading=""):
  champion=results[0]
  champion_icon=podium_icon(1,champion["guild"])
  champion_text=(
-  f"{heading}## {champion_icon} {fmt(champion['ms'])}\n"
+  f"{heading}{PB_FEATURED_HEADING}{champion_icon} {fmt(champion['ms'])}\n"
   f"{players_with_proof(champion,omit=omit)}\n"
   f"-# Achieved {pb_date_label(champion['pb_date'])}"
  )
@@ -2380,7 +2380,7 @@ def count_first_place_slots(message,icon):
   and isinstance(item.accessory,ui.Button)
   and item.accessory.label=="NOVUS #1"
   and item.accessory.style==discord.ButtonStyle.success
-  and any(line.startswith(f"## {icon} ") for child in item.children
+  and any(line.startswith(f"{PB_FEATURED_HEADING}{icon} ") for child in item.children
           for line in child.content.splitlines())
   for item in view.walk_children()
  )
