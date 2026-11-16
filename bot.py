@@ -255,6 +255,7 @@ ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
 PB_FEATURED_HEADING="# "
 PB_TOP10_PODIUM_HEADING="## "
+PB_TOP10_TITLE="## ✦ NOVUS TOP 10"
 PB_PLACEMENT_POINTS=(5,3,1)
 
 
@@ -565,6 +566,27 @@ class PB(commands.Bot):
   await super().close()
 bot=PB(command_prefix=commands.when_mentioned,intents=intents)
 
+def pb_points_order(entry):
+ return (-entry["points"],-entry["firsts"],-entry["seconds"],-entry["thirds"])
+
+
+def rank_pb_points(entries,limit=10):
+ # IDs only stabilize display order within a tie; they never affect rank.
+ ordered=sorted(entries,key=lambda entry:(*pb_points_order(entry),entry["member_id"]))
+ ranked=[]
+ previous=None
+ rank=0
+ for index,entry in enumerate(ordered,1):
+  key=pb_points_order(entry)
+  if key!=previous:
+   rank=index
+   previous=key
+  if rank>limit:
+   break
+  ranked.append({**entry,"rank":rank})
+ return ranked
+
+
 async def calculate_pb_points(g):
  rows=await store.approved_for_points(g)
  grouped={}
@@ -612,16 +634,7 @@ async def calculate_pb_points(g):
     else:
      entry["thirds"]+=1
 
- return sorted(
-  scores.values(),
-  key=lambda entry:(
-   -entry["points"],
-   -entry["firsts"],
-   -entry["seconds"],
-   -entry["thirds"],
-   entry["member_id"],
-  )
- )[:10]
+ return rank_pb_points(scores.values())
 
 
 def member_ids_for_record(record):
@@ -780,7 +793,8 @@ async def on_ready():
    try:
     ch=bot.get_channel(home["channel"]) or await bot.fetch_channel(home["channel"])
     message=await ch.fetch_message(home["message"])
-    view=await Home.make(guild.id)
+    points=await calculate_pb_points(guild.id)
+    view=Home(points,guild_id=guild.id)
     await paced_startup_edit(message, view=view,allowed_mentions=discord.AllowedMentions.none())
     confirmed=await ch.fetch_message(message.id)
     body=old_announcement_text(confirmed)
@@ -797,7 +811,11 @@ async def on_ready():
     )+r"\*"
     muted_breakdowns=sum(re.fullmatch(count_pattern,line) is not None for line in standings)
     scoring_footer=bool(standings and standings[-1]==top10_trophy_subtext(guild.id,PB_PLACEMENT_POINTS,scoring=True))
-    single_heading=standings.count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in standings
+    single_heading=standings.count(PB_TOP10_TITLE)==1 and "### TOP 10" not in standings
+    ranks=[entry["rank"] for entry in points]
+    matches_ranked_rows=body==PB_TOP10_TITLE+"\n"+top10_standings_text(points,guild.id)
+    logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s",
+                 message.id,ranks,matches_ranked_rows)
     logging.info("Verified overall PB Top 10 on message %s: inline trophies with medium podium headings=%s numbered ranks=%s muted trophy counts with regular x labels=%s labeled trophy scoring footer with regular points=%s single heading=%s",
                  message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
@@ -940,6 +958,44 @@ class RulesModal(ui.Modal,title="NOVUS | PB Rules"):
   await i.response.defer(ephemeral=True)
 
 
+def top10_standings_text(points,guild_id):
+ footer=top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True)
+
+ def row(entry,names):
+  rank=entry["rank"]
+  icon=podium_icon(rank,guild_id)
+  heading=PB_TOP10_PODIUM_HEADING if rank<=3 else ""
+  breakdown=top10_trophy_subtext(guild_id,(entry["firsts"],entry["seconds"],entry["thirds"]))
+  return f"{heading}{icon} {names} · **{entry['points']} pts**\n{breakdown}"
+
+ def render(rows):
+  return "\n".join([*rows,"",footer])
+
+ def fits(content):
+  return len((PB_TOP10_TITLE+content).encode("utf-16-le"))//2<=4000
+
+ rows=[row(entry,f"<@{entry['member_id']}>") for entry in points]
+ content=render(rows or ["-# No approved PB points yet."])
+ if fits(content):
+  return content
+
+ # Combine mentions on oversized boards without splitting tied players by ID.
+ groups={}
+ for entry in points:
+  groups.setdefault(entry["rank"],[]).append(entry)
+ grouped=list(groups.values())
+ rows=[row(group[0]," · ".join(f"<@{entry['member_id']}>" for entry in group)) for group in grouped]
+ content=render(rows)
+ for index in sorted(range(len(rows)),key=lambda i:len(rows[i]),reverse=True):
+  if fits(content):
+   break
+  group=grouped[index]
+  if len(group)>1:
+   rows[index]=row(group[0],f"{len(group)} players tied")
+   content=render(rows)
+ return content
+
+
 class Home(ui.LayoutView):
  def __init__(self,points=None,*,guild_id=None):
   super().__init__(timeout=None)
@@ -949,30 +1005,9 @@ class Home(ui.LayoutView):
   banner=ui.MediaGallery()
   banner.add_item(media=PB_BANNER_URL)
   hero.add_item(banner)
-  hero.add_item(ui.TextDisplay(
-   "## ✦ NOVUS TOP 10"
-  ))
+  hero.add_item(ui.TextDisplay(PB_TOP10_TITLE))
   hero.add_item(ui.Separator())
-
-  points_lines=[]
-
-  if not points:
-   points_lines.append("-# No approved PB points yet.")
-  else:
-   for index,entry in enumerate(points,1):
-    rank_display=podium_icon(index,guild_id)
-    heading=PB_TOP10_PODIUM_HEADING if index<=3 else ""
-    breakdown=top10_trophy_subtext(guild_id,(entry["firsts"],entry["seconds"],entry["thirds"]))
-    points_lines.append(
-     f"{heading}{rank_display} <@{entry['member_id']}> · **{entry['points']} pts**\n{breakdown}"
-    )
-
-  if points_lines:
-   points_lines.append("")
-  points_lines.append(top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True))
-  hero.add_item(
-   ui.TextDisplay("\n".join(points_lines))
-  )
+  hero.add_item(ui.TextDisplay(top10_standings_text(points,guild_id)))
   hero.add_item(ui.Separator())
 
   actions=ui.ActionRow()
