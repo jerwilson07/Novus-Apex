@@ -771,7 +771,9 @@ async def on_ready():
     body=old_announcement_text(confirmed)
     standings=body.splitlines()
     live=[n for n in loaded if any(
-     line.startswith(f"{PB_FEATURED_HEADING}{podium_icon(n,guild.id)} <@") for line in standings
+     line==f"{PB_FEATURED_HEADING}{podium_icon(n,guild.id)}"
+     and re.fullmatch(r"<@[0-9]+> · \*\*[0-9]+ pts\*\*",details)
+     for line,details in zip(standings,standings[1:])
     )]
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
@@ -781,7 +783,7 @@ async def on_ready():
     )
     scoring_footer=body.endswith("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*")
     single_heading=standings.count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in standings
-    logging.info("Verified overall PB Top 10 on message %s: left trophy ranks=%s numbered ranks=%s muted italic placement breakdowns=%s italic scoring footer=%s single heading=%s",
+    logging.info("Verified overall PB Top 10 on message %s: large left trophies with normal-sized details=%s numbered ranks=%s muted italic placement breakdowns=%s italic scoring footer=%s single heading=%s",
                  message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
@@ -931,15 +933,14 @@ class Home(ui.LayoutView):
   else:
    for index,entry in enumerate(points,1):
     rank_display=podium_icon(index,guild_id)
-    heading=PB_FEATURED_HEADING if index<=3 else ""
-    row=(
-     f"{heading}{rank_display} <@{entry['member_id']}> · **{entry['points']} pts**\n"
+    details=(
+     f"<@{entry['member_id']}> · **{entry['points']} pts**\n"
      f"-# *({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)*"
     )
     if index<=3:
-     hero.add_item(ui.TextDisplay(row))
+     hero.add_item(ui.TextDisplay(f"{PB_FEATURED_HEADING}{rank_display}\n{details}"))
     else:
-     points_lines.append(row)
+     points_lines.append(f"{rank_display} {details}")
 
   if points_lines:
    points_lines.append("")
