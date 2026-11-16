@@ -258,15 +258,25 @@ def podium_icon(rank,guild_id):
  name=f"novuspb{rank}"
  return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
 
+def boss_first_icon(guild_id):
+ # The Novus boss boards shouldn't revert to the generic trophy if Discord
+ # hasn't provided the custom emoji yet.
+ icon=ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get("novuspb1")
+ return icon or ("#1" if guild_id==NOVUS_GUILD_ID else MEDALS[0])
+
+
 async def fetch_activity_emojis(guild):
  try:
   server_emojis=await guild.fetch_emojis()
  except discord.HTTPException:
   logging.warning("Could not fetch server emojis for %s; using cache",guild.id)
-  server_emojis=guild.emojis
- ACTIVITY_EMOJI_CACHE[guild.id]={
-  emoji.name.casefold():str(emoji) for emoji in server_emojis
- }
+  cached=dict(ACTIVITY_EMOJI_CACHE.get(guild.id,{}))
+  cached.update({emoji.name.casefold():str(emoji) for emoji in guild.emojis})
+  ACTIVITY_EMOJI_CACHE[guild.id]=cached
+ else:
+  ACTIVITY_EMOJI_CACHE[guild.id]={
+   emoji.name.casefold():str(emoji) for emoji in server_emojis
+  }
  return ACTIVITY_EMOJI_CACHE[guild.id]
 
 def activity_icon(activity):
@@ -660,8 +670,9 @@ class PersonalPBProfile(ui.LayoutView):
    if summary["placements"]:
     lines=[]
     for rank,r in summary["placements"][:10]:
+     icon=boss_first_icon(r["guild"]) if rank==1 and r["category"]=="Bosses" else MEDALS[rank-1]
      lines.append(
-      f"{MEDALS[rank-1]} **{clean(r['activity'])}** · "
+      f"{icon} **{clean(r['activity'])}** · "
       f"{clean(r['variant'])} · **{fmt(r['ms'])}**"
      )
     panel.add_item(ui.TextDisplay(
@@ -782,6 +793,8 @@ async def on_ready():
     logging.exception("Failed to refresh PB scroll-to-top footer")
   proof_boards_ok=True
   boss_trophies=0
+  verified_first_slots=0
+  first_slot_issues=[]
   priority={"Demonic Brutus":-1,"Inferno":0,"Araxxor":1,"Royal Titans":2}
   for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
@@ -790,8 +803,18 @@ async def on_ready():
     ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
     message=await ch.fetch_message(record["message"])
     saved=await write_linked_board(ch,guild.id,activity,message=message)
+    factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
+    count=sum(bool(results) for _,results in await factory.blocks(guild.id,activity))
+    expected_icon=(podium_icon(1,guild.id) if activity in BOSSES else MEDALS[0])
+    matched=count_first_place_slots(saved,expected_icon)
+    verified_first_slots+=matched
     if activity in BOSSES and 1 in loaded:
-     boss_trophies+=old_announcement_text(saved).count(f"## {podium_icon(1,guild.id)} ")
+     boss_trophies+=matched
+    if matched!=count or (activity in BOSSES and count and 1 not in loaded):
+     first_slot_issues.append(f"{activity} ({matched}/{count})")
+    if count:
+     logging.info("Verified NOVUS #1 slots on %s board %s: %s/%s",
+                  activity,message.id,matched,count)
     await asyncio.sleep(1.4)
     if activity in ("Demonic Brutus","Inferno","Araxxor"):
      body=old_announcement_text(saved)
@@ -810,7 +833,10 @@ async def on_ready():
      await verify_royal_titans_35_public(guild,ch,message.id)
    except (discord.HTTPException,aiosqlite.Error):
     proof_boards_ok=False
+    first_slot_issues.append(f"{activity} (refresh failed)")
     logging.exception("Failed to refresh PB icon for %s",activity)
+  logging.info("NOVUS #1 board verification: %s occupied slots with green badges; issues=%s",
+               verified_first_slots,first_slot_issues)
   snapshot_ok=await refresh_proof_snapshot(guild.id)
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
   logging.info("Finished refreshing inline proof links for guild %s",guild.id)
@@ -1056,32 +1082,35 @@ class BossDirectory(ui.LayoutView):
 
 
 
-def add_featured_ranking(panel, results, *, compact=False, omit=(), boss=False):
+def first_place_section(record,content):
+ return ui.Section(
+  ui.TextDisplay(content),
+  accessory=ui.Button(
+   label="NOVUS #1",
+   style=discord.ButtonStyle.success,
+   disabled=True,
+   custom_id=f"pb:leader:first:{record['id']}",
+  ),
+ )
+
+
+def add_featured_ranking(panel, results, *, compact=False, omit=(), boss=False, heading=""):
  # Display one featured champion and keep the remaining places easy to scan.
  # No custom fonts or image cards: everything is native Discord Components V2.
  if not results:
   panel.add_item(ui.TextDisplay(
-   "-# Be the first to claim this record!"
+   heading+"-# Be the first to claim this record!"
   ))
   return
 
  champion=results[0]
- champion_icon=podium_icon(1,champion["guild"]) if boss else MEDALS[0]
+ champion_icon=boss_first_icon(champion["guild"]) if boss else MEDALS[0]
  champion_text=(
-  f"## {champion_icon} {fmt(champion['ms'])}\n"
+  f"{heading}## {champion_icon} {fmt(champion['ms'])}\n"
   f"{players_with_proof(champion,omit=omit)}\n"
   f"-# Achieved {pb_date_label(champion['pb_date'])}"
  )
- if not compact:
-  panel.add_item(ui.Section(
-   ui.TextDisplay(champion_text),
-   accessory=ui.Button(
-    label="NOVUS #1",
-    style=discord.ButtonStyle.success,
-    disabled=True,
-    custom_id=f"pb:leader:first:{champion['id']}"
-   )
-  ))
+ panel.add_item(first_place_section(champion,champion_text))
 
  remaining=[]
  for rank in range(1,5):
@@ -1095,11 +1124,9 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), boss=False):
    f"{MEDALS[rank]} **{fmt(r['ms'])}** · {public_members(r)}{proof}"
   )
 
- if compact:
-  panel.add_item(ui.TextDisplay(champion_text+"\n\n"+"\n".join(remaining)))
- else:
+ if not compact:
   panel.add_item(ui.Separator())
-  panel.add_item(ui.TextDisplay("\n".join(remaining)))
+ panel.add_item(ui.TextDisplay("\n".join(remaining)))
 
 
 def board_proof_rows(blocks,*,force_menu=False):
@@ -1167,21 +1194,25 @@ class RaidLeaderboard(ui.LayoutView):
  def __init__(self,activity,blocks,*,omit=()):
   super().__init__(timeout=None)
 
-  heading=ui.Container(accent_colour=GOLD)
-  heading.add_item(ui.TextDisplay(
-   f"## {activity_icon(activity)}{clean(activity)}"
-  ))
-  self.add_item(heading)
-
-  # The title uses 2 components and a populated featured bracket uses 7.
-  # Keep every bracket on one message within Discord's 40-component limit.
+  title=f"## {activity_icon(activity)}{clean(activity)}"
+  # A full bracket takes seven components. Compact brackets take five,
+  # including the green badge. Eight populated brackets use all 40, so
+  # merge the title and variant headings into existing displays in that case.
   compact=2+sum(7 if results else 3 for _,results in blocks)>40
-  for variant,results in blocks:
+  merge_title=compact and 2+sum(5 if results else 2 for _,results in blocks)>40
+  if not merge_title:
+   heading=ui.Container(accent_colour=GOLD)
+   heading.add_item(ui.TextDisplay(title))
+   self.add_item(heading)
+
+  for index,(variant,results) in enumerate(blocks):
    panel=ui.Container(accent_colour=GOLD)
-   panel.add_item(ui.TextDisplay(
-    f"### {clean(variant)}"
-   ))
-   add_featured_ranking(panel,results,compact=compact,omit=omit)
+   subtitle=f"### {clean(variant)}"
+   if not compact:
+    panel.add_item(ui.TextDisplay(subtitle))
+   prefix=((title+"\n" if merge_title and index==0 else "")+subtitle+"\n"
+           if compact else "")
+   add_featured_ranking(panel,results,compact=compact,omit=omit,heading=prefix)
    self.add_item(panel)
 
  @classmethod
@@ -2296,6 +2327,19 @@ class FirstPlaceAnnouncementCard(ui.LayoutView):
   if links.children:
    panel.add_item(links)
   self.add_item(panel)
+
+
+def count_first_place_slots(message,icon):
+ view=ui.LayoutView.from_message(message)
+ return sum(
+  isinstance(item,ui.Section)
+  and isinstance(item.accessory,ui.Button)
+  and item.accessory.label=="NOVUS #1"
+  and item.accessory.style==discord.ButtonStyle.success
+  and any(line.startswith(f"## {icon} ") for child in item.children
+          for line in child.content.splitlines())
+  for item in view.walk_children()
+ )
 
 
 def old_announcement_text(message):

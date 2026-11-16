@@ -51,6 +51,15 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🏆", raid)
         self.assertNotIn(EMOJIS["novuspb1"], raid)
 
+    def test_novus_boss_does_not_fall_back_to_gold_trophy(self):
+        guild = bot.NOVUS_GUILD_ID
+        row = record(guild=guild, category="Bosses", activity="Vorkath", variant="Standard")
+        view = bot.BossLeaderboard("Vorkath", [("Standard", [row])])
+        self.assertNotIn("🏆", str(view.to_components()))
+        with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild: EMOJIS}):
+            view = bot.BossLeaderboard("Vorkath", [("Standard", [row])])
+            self.assertIn(EMOJIS["novuspb1"], str(view.to_components()))
+
     def test_new_announcement_and_legacy_heading(self):
         r = record(guild=123, proof=f"archive:{1:032x}.png")
         card = bot.FirstPlaceAnnouncementCard(r)

@@ -206,6 +206,31 @@ class PBLayoutTests(unittest.TestCase):
         for variant_panel in board.children[1:]:
             self.assertLessEqual(len(variant_panel.children), 10)
 
+    def test_all_raid_brackets_keep_green_badges_within_component_limit(self):
+        for activity, variants in bot.RAIDS.items():
+            for occupied in range(len(variants) + 1):
+                with self.subTest(activity=activity, occupied=occupied):
+                    blocks = [
+                        (variant, [record(id=j+1, activity=activity, variant=variant)]
+                         if j < occupied else [])
+                        for j, variant in enumerate(variants)
+                    ]
+                    board = bot.RaidLeaderboard(activity, blocks)
+                    self.assertLessEqual(board.total_children_count, 40)
+                    text = "\n".join(item.content for item in board.walk_children()
+                                     if isinstance(item, bot.ui.TextDisplay))
+                    for variant in variants:
+                        self.assertIn(f"### {variant}", text)
+                    sections = [
+                        item for item in board.walk_children()
+                        if isinstance(item, bot.ui.Section)
+                        and item.accessory.label == "NOVUS #1"
+                    ]
+                    self.assertEqual(len(sections), occupied)
+                    for section in sections:
+                        self.assertEqual(section.accessory.style, bot.discord.ButtonStyle.success)
+                        self.assertTrue(section.accessory.disabled)
+
     def test_browsers_feature_first_record_with_native_section(self):
         first = record(id=71, category="Bosses", activity="Vorkath",
                        variant="Standard")
