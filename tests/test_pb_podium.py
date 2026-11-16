@@ -15,28 +15,35 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patch.stopall)
         patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: EMOJIS}, clear=True).start()
 
-    def test_top10_uses_custom_emojis_for_only_first_three(self):
-        points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
-                  for i in range(1, 11)]
-        content = str(bot.Home(points, guild_id=123).to_components())
-        for emoji in EMOJIS.values():
-            self.assertEqual(content.count(emoji), 1)
-        for i in range(4, 11):
-            self.assertIn(f"**{i}.** <@{i}>", content)
-        self.assertEqual(bot.podium_icon(1, 999), "#1")
-
-    def test_only_top_three_are_larger_and_scoring_follows_the_last_entry(self):
+    def test_top10_uses_large_trophy_art_for_only_first_three(self):
         points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
                   for i in range(1, 11)]
         view = bot.Home(points, guild_id=123)
-        standings = next(item.content for item in view.walk_children()
-                         if isinstance(item, bot.ui.TextDisplay) and " · **" in item.content)
-        lines = standings.splitlines()
-        for i in range(1, 4):
-            self.assertTrue(lines[i-1].startswith(f"### {EMOJIS[f'novuspb{i}']} <@{i}>"))
-        for i in range(4, 11):
-            self.assertTrue(lines[i-1].startswith(f"**{i}.** <@{i}>"))
-        self.assertEqual(lines[10:], ["", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"])
+        sections = [item for item in view.walk_children() if isinstance(item, bot.ui.Section)]
+        self.assertEqual(len(sections), 3)
+        for rank, section in enumerate(sections, 1):
+            self.assertIsInstance(section.accessory, bot.ui.Thumbnail)
+            self.assertEqual(section.accessory.media.url,
+                             f"https://cdn.discordapp.com/emojis/{123456789123456780+rank}.png?size=128")
+            self.assertTrue(section.children[0].content.startswith(f"### {rank}. <@{rank}>"))
+        standings = "\n".join(item.content for item in view.walk_children()
+                              if isinstance(item, bot.ui.TextDisplay))
+        for rank in range(4, 11):
+            self.assertIn(f"**{rank}.** <@{rank}>", standings)
+        self.assertTrue(standings.endswith("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"))
+        self.assertLessEqual(len(view.children[0].children), 10)
+
+    def test_missing_trophy_keeps_the_podium_order(self):
+        points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
+                  for i in range(1, 4)]
+        with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: {"novuspb2": EMOJIS["novuspb2"]}}):
+            view = bot.Home(points, guild_id=123)
+        lines = [item.content for item in view.walk_children()
+                 if isinstance(item, bot.ui.TextDisplay) and "<@" in item.content]
+        self.assertTrue(lines[0].startswith("### #1 <@1>"))
+        self.assertTrue(lines[1].startswith("### 2. <@2>"))
+        self.assertTrue(lines[2].startswith("### 🥉 <@3>"))
+        self.assertIsNone(bot.podium_trophy_url(4, 123))
 
     def test_boss_and_raid_champions_use_custom_icon_without_changing_lower_ranks(self):
         items = [record(id=i, member_ids=str(i), ms=1000*i) for i in range(1, 4)]

@@ -262,6 +262,19 @@ def podium_icon(rank,guild_id):
  name=f"novuspb{rank}"
  return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
 
+def podium_trophy_url(rank,guild_id):
+ """Return the custom trophy artwork for a larger Discord thumbnail."""
+ if rank not in PB_PODIUM_FALLBACK:
+  return None
+ icon=podium_icon(rank,guild_id)
+ match=re.fullmatch(fr"<(a?):novuspb{rank}:([0-9]{{17,20}})>",icon)
+ if not match:
+  return None
+ extension="webp" if match[1] else "png"
+ animated="&animated=true" if match[1] else ""
+ return f"https://cdn.discordapp.com/emojis/{match[2]}.{extension}?size=128{animated}"
+
+
 async def fetch_activity_emojis(guild):
  try:
   server_emojis=await guild.fetch_emojis()
@@ -768,12 +781,17 @@ async def on_ready():
     await paced_startup_edit(message, view=view,allowed_mentions=discord.AllowedMentions.none())
     confirmed=await ch.fetch_message(message.id)
     body=old_announcement_text(confirmed)
-    live=[n for n in loaded if podium_icon(n,guild.id) in body]
+    displayed=ui.LayoutView.from_message(confirmed)
+    thumbnail_paths={
+     urlparse(item.media.url).path for item in displayed.walk_children()
+     if isinstance(item,ui.Thumbnail)
+    }
+    live=[n for n in loaded if urlparse(podium_trophy_url(n,guild.id) or "").path in thumbnail_paths]
     standings=body
     podium_rows=sum(line.startswith("### ") and "<@" in line for line in standings.splitlines())
     scoring_footer=standings.endswith("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt")
     single_heading=body.splitlines().count("## ✦ NOVUS TOP 10")==1 and "### TOP 10" not in body
-    logging.info("Verified overall PB Top 10 on message %s: trophy emojis=%s larger podium rows=%s scoring footer=%s single heading=%s",
+    logging.info("Verified overall PB Top 10 on message %s: large trophy thumbnails=%s larger podium rows=%s scoring footer=%s single heading=%s",
                  message.id,live,podium_rows,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
@@ -922,15 +940,29 @@ class Home(ui.LayoutView):
    points_lines.append("-# No approved PB points yet.")
   else:
    for index,entry in enumerate(points,1):
-    rank_display=podium_icon(index,guild_id)
-    podium_heading="### " if index<=3 else ""
-    points_lines.append(
-     f"{podium_heading}{rank_display} <@{entry['member_id']}> · "
-     f"**{entry['points']} pts** "
-     f"- ({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)"
-    )
+    trophy_url=podium_trophy_url(index,guild_id)
+    breakdown=f"({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)"
+    if trophy_url:
+     hero.add_item(ui.Section(
+      ui.TextDisplay(
+       f"### {index}. <@{entry['member_id']}> · **{entry['points']} pts**\n"
+       f"-# {breakdown}"
+      ),
+      accessory=ui.Thumbnail(trophy_url,description=f"Novus trophy for place {index}"),
+     ))
+    else:
+     rank_display=podium_icon(index,guild_id)
+     podium_heading="### " if index<=3 else ""
+     line=(f"{podium_heading}{rank_display} <@{entry['member_id']}> · "
+           f"**{entry['points']} pts** - {breakdown}")
+     if index<=3:
+      hero.add_item(ui.TextDisplay(line))
+     else:
+      points_lines.append(line)
 
-  points_lines.extend(("", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"))
+  if points_lines:
+   points_lines.append("")
+  points_lines.append("-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt")
   hero.add_item(
    ui.TextDisplay("\n".join(points_lines))
   )
