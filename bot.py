@@ -72,7 +72,6 @@ royal_titans_35_partner_id=None
 
 def solo_boss_variant(activity,variant):
  return activity not in NON_SOLO_BOSSES
-MEDALS=["#1","🥈","🥉","4.","5."]
 PB_EARLIEST_DATE=datetime(2026,11,7).date()
 
 def pb_date_eligible(value):
@@ -188,7 +187,7 @@ def proof_link_needs_refresh(url,at):
   return True
 
 def short_record(r,rank,include_variant=False,*,omit=()):
- icon=podium_icon(1,r["guild"]) if rank==0 else MEDALS[rank]
+ icon=card_rank_icon(rank+1,r["guild"])
  lines=[f"{icon} **{fmt(r['ms'])}**"]
  if include_variant:
   lines.append(f"**{clean(r['variant'])}**")
@@ -253,7 +252,7 @@ ACTIVITY_EMOJIS={
 }
 
 ACTIVITY_EMOJI_CACHE={}
-PB_PODIUM_FALLBACK={1:"#1",2:"🥈",3:"🥉"}
+PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
 PB_FEATURED_HEADING="# "
 PB_PLACEMENT_POINTS=(5,3,1)
 
@@ -264,11 +263,15 @@ def podium_icon(rank,guild_id):
  name=f"novuspb{rank}"
  return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
 
+def card_rank_icon(rank,guild_id):
+ return podium_icon(rank,guild_id) if rank in PB_PODIUM_FALLBACK else f"{rank}."
+
+
 def top10_trophy_subtext(guild_id,values,*,scoring=False):
  prefix="Scoring · " if scoring else ""
  parts=(
   f"{podium_icon(rank,guild_id)} "
-  + (f"- +{value} {'pt' if value==1 else 'pts'}" if scoring else f"x {value}")
+  + (f"+{value} {'pt' if value==1 else 'pts'}" if scoring else f"x {value}")
   for rank,value in enumerate(values,1)
  )
  return "-# *"+prefix+" · ".join(parts)+"*"
@@ -671,14 +674,15 @@ class PersonalPBProfile(ui.LayoutView):
   else:
    panel.add_item(ui.TextDisplay(
     f"**{summary['points']} pts** · {podium_icon(1,guild_id)} {summary['firsts']} first · "
-    f"🥈 {summary['seconds']} second · 🥉 {summary['thirds']} third\n"
+    f"{podium_icon(2,guild_id)} {summary['seconds']} second · "
+     f"{podium_icon(3,guild_id)} {summary['thirds']} third\n"
     f"-# {summary['approved_count']} approved PB submissions"
    ))
    panel.add_item(ui.Separator())
    if summary["placements"]:
     lines=[]
     for rank,r in summary["placements"][:10]:
-     icon=podium_icon(1,r["guild"]) if rank==1 else MEDALS[rank-1]
+     icon=card_rank_icon(rank,r["guild"])
      lines.append(
       f"{icon} **{clean(r['activity'])}** · "
       f"{clean(r['variant'])} · **{fmt(r['ms'])}**"
@@ -812,6 +816,8 @@ async def on_ready():
   boss_trophies=0
   verified_first_slots=0
   first_slot_issues=[]
+  verified_runner_up_slots=[0,0]
+  runner_up_slot_issues=[]
   priority={"Demonic Brutus":-1,"Inferno":0,"Araxxor":1,"Royal Titans":2}
   for record in sorted(records,key=lambda record:priority.get(record["activity"],2)):
    activity=record["activity"]
@@ -825,6 +831,11 @@ async def on_ready():
     expected_icon=podium_icon(1,guild.id)
     matched=count_first_place_slots(saved,expected_icon)
     verified_first_slots+=matched
+    runner_ups=count_runner_up_trophies(saved,guild.id)
+    for i,total in enumerate(runner_ups):
+     verified_runner_up_slots[i]+=total
+    if runner_ups!=(count,count) or (count and not {2,3}.issubset(loaded)):
+     runner_up_slot_issues.append(f"{activity} ({runner_ups[0]}/{count}, {runner_ups[1]}/{count})")
     if activity in BOSSES and 1 in loaded:
      boss_trophies+=matched
     if matched!=count or (count and 1 not in loaded):
@@ -851,9 +862,12 @@ async def on_ready():
    except (discord.HTTPException,aiosqlite.Error):
     proof_boards_ok=False
     first_slot_issues.append(f"{activity} (refresh failed)")
+    runner_up_slot_issues.append(f"{activity} (refresh failed)")
     logging.exception("Failed to refresh PB icon for %s",activity)
   logging.info("NOVUS #1 board verification: %s occupied slots with largest trophy headings and green badges; issues=%s",
                verified_first_slots,first_slot_issues)
+  logging.info("Verified custom runner-up trophies on PB boards: second=%s third=%s issues=%s",
+               verified_runner_up_slots[0],verified_runner_up_slots[1],runner_up_slot_issues)
   snapshot_ok=await refresh_proof_snapshot(guild.id)
   if snapshot_ok and 1 in loaded:
    snapshot=await store.snapshot_panel(guild.id)
@@ -861,9 +875,12 @@ async def on_ready():
     try:
      ch=bot.get_channel(snapshot["channel"]) or await bot.fetch_channel(snapshot["channel"])
      message=await ch.fetch_message(snapshot["message"])
-     expected=sum([bool(await store.raid_top3(guild.id,raid)) for raid in RAIDS])
+     snapshot_rows=[await store.raid_top3(guild.id,raid) for raid in RAIDS]
+     expected=tuple(sum(len(results)>=rank for results in snapshot_rows) for rank in range(1,4))
      badges=count_first_place_slots(message,podium_icon(1,guild.id))
-     logging.info("Verified raid snapshot custom trophies and green badges: %s/%s",badges,expected)
+     runner_ups=count_runner_up_trophies(message,guild.id)
+     logging.info("Verified raid snapshot custom trophies and green badges: %s/%s; runner-up trophies=%s expected=%s",
+                  badges,expected[0],runner_ups,expected[1:])
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
@@ -1166,14 +1183,15 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), heading=""):
 
  remaining=[]
  for rank in range(1,5):
+  icon=card_rank_icon(rank+1,champion["guild"])
   if rank>=len(results):
-   remaining.append(f"{MEDALS[rank]} Empty")
+   remaining.append(f"{icon} Empty")
    continue
   r=results[rank]
   evidence=proof_text(r,omit=omit)
   proof=f" · {evidence}" if evidence else ""
   remaining.append(
-   f"{MEDALS[rank]} **{fmt(r['ms'])}** · {public_members(r)}{proof}"
+   f"{icon} **{fmt(r['ms'])}** · {public_members(r)}{proof}"
   )
 
  if not compact:
@@ -2391,6 +2409,14 @@ def count_first_place_slots(message,icon):
   and any(line.startswith(f"{PB_FEATURED_HEADING}{icon} ") for child in item.children
           for line in child.content.splitlines())
   for item in view.walk_children()
+ )
+
+
+def count_runner_up_trophies(message,guild_id):
+ lines=old_announcement_text(message).splitlines()
+ return tuple(
+  sum(line.startswith(podium_icon(rank,guild_id)+" ") for line in lines)
+  for rank in (2,3)
  )
 
 
