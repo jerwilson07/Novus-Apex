@@ -35,7 +35,7 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.splitlines().count("## ✦ NOVUS TOP 10"), 1)
         self.assertNotIn("### TOP 10", text)
         self.assertNotIn("PERSONAL BESTS", text)
-        self.assertIn("🏆 <@123> · **20 pts**", text)
+        self.assertIn("#1 <@123> · **20 pts**", text)
         self.assertIn("🥈 <@456> · **8 pts**", text)
         actions = [
             child for child in panel.children

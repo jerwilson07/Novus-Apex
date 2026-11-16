@@ -72,7 +72,7 @@ royal_titans_35_partner_id=None
 
 def solo_boss_variant(activity,variant):
  return activity not in NON_SOLO_BOSSES
-MEDALS=["🏆","🥈","🥉","4.","5."]
+MEDALS=["#1","🥈","🥉","4.","5."]
 PB_EARLIEST_DATE=datetime(2026,11,7).date()
 
 def pb_date_eligible(value):
@@ -188,10 +188,14 @@ def proof_link_needs_refresh(url,at):
   return True
 
 def short_record(r,rank,include_variant=False,*,omit=()):
- lines=[f"{MEDALS[rank]} **{fmt(r['ms'])}**"]
+ icon=podium_icon(1,r["guild"]) if rank==0 else MEDALS[rank]
+ lines=[f"{icon} **{fmt(r['ms'])}**"]
  if include_variant:
   lines.append(f"**{clean(r['variant'])}**")
- lines.append(players_with_proof(r,omit=omit))
+ players=players_with_proof(r,omit=omit)
+ if r["id"] in omit:
+  players+=f" · PB #{r['id']}"
+ lines.append(players)
  if rank==0:
   lines.append(f"-# Achieved {pb_date_label(r['pb_date'])}")
  return "\n".join(lines)
@@ -249,7 +253,7 @@ ACTIVITY_EMOJIS={
 }
 
 ACTIVITY_EMOJI_CACHE={}
-PB_PODIUM_FALLBACK={1:"🏆",2:"🥈",3:"🥉"}
+PB_PODIUM_FALLBACK={1:"#1",2:"🥈",3:"🥉"}
 
 
 def podium_icon(rank,guild_id):
@@ -257,13 +261,6 @@ def podium_icon(rank,guild_id):
   return f"**{rank}.**"
  name=f"novuspb{rank}"
  return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
-
-def boss_first_icon(guild_id):
- # The Novus boss boards shouldn't revert to the generic trophy if Discord
- # hasn't provided the custom emoji yet.
- icon=ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get("novuspb1")
- return icon or ("#1" if guild_id==NOVUS_GUILD_ID else MEDALS[0])
-
 
 async def fetch_activity_emojis(guild):
  try:
@@ -651,7 +648,7 @@ def build_member_profile(rows,member_id):
 
 class PersonalPBProfile(ui.LayoutView):
  """Private Discord-only view of the member's standings and approved history."""
- def __init__(self,member_id,summary):
+ def __init__(self,member_id,summary,*,guild_id=None):
   super().__init__(timeout=900)
   panel=ui.Container(accent_colour=GOLD)
   panel.add_item(ui.TextDisplay(f"## ✦ NOVUS · MY PBs\n<@{member_id}>"))
@@ -662,7 +659,7 @@ class PersonalPBProfile(ui.LayoutView):
    ))
   else:
    panel.add_item(ui.TextDisplay(
-    f"**{summary['points']} pts** · 🏆 {summary['firsts']} first · "
+    f"**{summary['points']} pts** · {podium_icon(1,guild_id)} {summary['firsts']} first · "
     f"🥈 {summary['seconds']} second · 🥉 {summary['thirds']} third\n"
     f"-# {summary['approved_count']} approved PB submissions"
    ))
@@ -670,7 +667,7 @@ class PersonalPBProfile(ui.LayoutView):
    if summary["placements"]:
     lines=[]
     for rank,r in summary["placements"][:10]:
-     icon=boss_first_icon(r["guild"]) if rank==1 and r["category"]=="Bosses" else MEDALS[rank-1]
+     icon=podium_icon(1,r["guild"]) if rank==1 else MEDALS[rank-1]
      lines.append(
       f"{icon} **{clean(r['activity'])}** · "
       f"{clean(r['variant'])} · **{fmt(r['ms'])}**"
@@ -693,7 +690,7 @@ async def show_my_pbs(i):
   )
  rows=await store.approved_for_points(i.guild_id)
  await i.response.send_message(
-  view=PersonalPBProfile(i.user.id,build_member_profile(rows,i.user.id)),
+  view=PersonalPBProfile(i.user.id,build_member_profile(rows,i.user.id),guild_id=i.guild_id),
   ephemeral=True,allowed_mentions=discord.AllowedMentions.none()
  )
 
@@ -805,12 +802,12 @@ async def on_ready():
     saved=await write_linked_board(ch,guild.id,activity,message=message)
     factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
     count=sum(bool(results) for _,results in await factory.blocks(guild.id,activity))
-    expected_icon=(podium_icon(1,guild.id) if activity in BOSSES else MEDALS[0])
+    expected_icon=podium_icon(1,guild.id)
     matched=count_first_place_slots(saved,expected_icon)
     verified_first_slots+=matched
     if activity in BOSSES and 1 in loaded:
      boss_trophies+=matched
-    if matched!=count or (activity in BOSSES and count and 1 not in loaded):
+    if matched!=count or (count and 1 not in loaded):
      first_slot_issues.append(f"{activity} ({matched}/{count})")
     if count:
      logging.info("Verified NOVUS #1 slots on %s board %s: %s/%s",
@@ -838,6 +835,17 @@ async def on_ready():
   logging.info("NOVUS #1 board verification: %s occupied slots with green badges; issues=%s",
                verified_first_slots,first_slot_issues)
   snapshot_ok=await refresh_proof_snapshot(guild.id)
+  if snapshot_ok and 1 in loaded:
+   snapshot=await store.snapshot_panel(guild.id)
+   if snapshot:
+    try:
+     ch=bot.get_channel(snapshot["channel"]) or await bot.fetch_channel(snapshot["channel"])
+     message=await ch.fetch_message(snapshot["message"])
+     expected=sum([bool(await store.raid_top3(guild.id,raid)) for raid in RAIDS])
+     badges=count_first_place_slots(message,podium_icon(1,guild.id))
+     logging.info("Verified raid snapshot custom trophies and green badges: %s/%s",badges,expected)
+    except (discord.HTTPException,aiosqlite.Error):
+     logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
   logging.info("Finished refreshing inline proof links for guild %s",guild.id)
   if proof_boards_ok and snapshot_ok:
@@ -964,21 +972,27 @@ class Home(ui.LayoutView):
 
 
 class SnapshotPanel(ui.LayoutView):
- def __init__(self,raid_leaders=None,recent=None):
+ def __init__(self,raid_leaders=None,recent=None,*,omit=()):
   super().__init__(timeout=None)
   raid_leaders=raid_leaders or {}
   recent=recent or []
 
   records=ui.Container(accent_colour=BLUE)
-  snapshot=["### RAID SNAPSHOT"]
+  records.add_item(ui.TextDisplay("### RAID SNAPSHOT"))
   for activity in RAIDS:
    results=raid_leaders.get(activity,[])
-   snapshot.append(f"\n{activity_icon(activity)}**{clean(activity)}**")
+   heading=f"{activity_icon(activity)}**{clean(activity)}**"
    if results:
-    snapshot.extend(short_record(r,k,include_variant=True) for k,r in enumerate(results))
+    champion=results[0]
+    records.add_item(first_place_section(
+     champion,heading+"\n"+"## "+short_record(champion,0,include_variant=True,omit=omit),
+    ))
+    if results[1:]:
+     records.add_item(ui.TextDisplay("\n".join(
+      short_record(r,k,include_variant=True,omit=omit) for k,r in enumerate(results[1:],1)
+     )))
    else:
-    snapshot.append("-# Be the first to claim this record!")
-  records.add_item(ui.TextDisplay("\n".join(snapshot)))
+    records.add_item(ui.TextDisplay(heading+"\n-# Be the first to claim this record!"))
 
   recent_panel=ui.Container(accent_colour=BLUE)
   updated=discord_updated(recent[0]["updated"]) if recent else None
@@ -996,13 +1010,16 @@ class SnapshotPanel(ui.LayoutView):
     recent_text=(
      f"**{clean(activity)} · {clean(r['variant'])}**\n"
      f"**{fmt(r['ms'])}**\n"
-     f"{players_with_proof(r)}\n"
-     f"-# Achieved {pb_date_label(r['pb_date'])}"
+     f"{players_with_proof(r,omit=omit)}"
+     + (f" · PB #{r['id']}" if r["id"] in omit else "")
+     + f"\n-# Achieved {pb_date_label(r['pb_date'])}"
     )
     recent_panel.add_item(ui.TextDisplay(recent_text))
     if idx!=len(recent)-1:
      recent_panel.add_item(ui.Separator())
 
+  if omit:
+   recent_panel.add_item(ui.TextDisplay("-# For compact entries, use /pbviewproof with the PB number."))
   self.add_item(records)
   self.add_item(recent_panel)
 
@@ -1012,10 +1029,24 @@ class SnapshotPanel(ui.LayoutView):
    activity:await store.raid_top3(g,activity)
    for activity in RAIDS
   }
-  return cls(
-   leaders,
-   await store.recent_approved(g,3)
-  )
+  return fit_snapshot_panel(leaders,await store.recent_approved(g,3))
+
+
+def fit_snapshot_panel(leaders,recent):
+ # Omit redundant long links before dropping any names, times, or badges.
+ omit=set()
+ choices=[r for rows in leaders.values() for r in rows[1:]]
+ choices.extend(recent)
+ choices.extend(rows[0] for rows in leaders.values() if rows)
+ panel=SnapshotPanel(leaders,recent)
+ for r in choices:
+  if sum(len(i.content.encode("utf-16-le"))//2 for i in panel.walk_children()
+         if isinstance(i,ui.TextDisplay))<=4000:
+   break
+  if proof_text(r,omit=omit):
+   omit.add(r["id"])
+   panel=SnapshotPanel(leaders,recent,omit=omit)
+ return panel
 
 
 class BossDirectory(ui.LayoutView):
@@ -1094,7 +1125,7 @@ def first_place_section(record,content):
  )
 
 
-def add_featured_ranking(panel, results, *, compact=False, omit=(), boss=False, heading=""):
+def add_featured_ranking(panel, results, *, compact=False, omit=(), heading=""):
  # Display one featured champion and keep the remaining places easy to scan.
  # No custom fonts or image cards: everything is native Discord Components V2.
  if not results:
@@ -1104,7 +1135,7 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), boss=False, 
   return
 
  champion=results[0]
- champion_icon=boss_first_icon(champion["guild"]) if boss else MEDALS[0]
+ champion_icon=podium_icon(1,champion["guild"])
  champion_text=(
   f"{heading}## {champion_icon} {fmt(champion['ms'])}\n"
   f"{players_with_proof(champion,omit=omit)}\n"
@@ -1166,7 +1197,7 @@ class BossLeaderboard(ui.LayoutView):
     panel.add_item(ui.Separator())
    if len(blocks)>1:
     panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   add_featured_ranking(panel,results,boss=True)
+   add_featured_ranking(panel,results)
 
   self.add_item(panel)
 
@@ -1678,7 +1709,7 @@ class Browser(ui.LayoutView):
     rankings.add_item(ui.Separator())
    if variant!="Standard":
     rankings.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   add_featured_ranking(rankings,results,boss=cat=="Bosses")
+   add_featured_ranking(rankings,results)
 
   shortcuts=ui.ActionRow()
   submit=ui.Button(label="Submit PB",style=discord.ButtonStyle.success)
@@ -2065,7 +2096,7 @@ async def refresh_proof_snapshot(guild_id):
     path=archive_path(DBPATH,r["proof"])
     if path and path.is_file() and proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(r["proof"]),at):
      await cache_proof_from_review(r,path)
-   await paced_startup_edit(message,view=SnapshotPanel(leaders,recent),
+   await paced_startup_edit(message,view=fit_snapshot_panel(leaders,recent),
                             allowed_mentions=discord.AllowedMentions.none())
   return True
  except discord.HTTPException:
@@ -2356,7 +2387,7 @@ def old_announcement_text(message):
  return "\n".join(chunks)
 
 
-FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )🏆(?= NEW NOVUS #1[ \t]*$)")
+FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1)(?= NEW NOVUS #1[ \t]*$)")
 
 
 def replace_first_trophy_heading(content,icon):
@@ -2368,7 +2399,7 @@ async def refresh_first_announcement_trophy_icons(guild_id):
  icon=podium_icon(1,guild_id)
  if not GENERAL_CHAT_ID or not bot.user or icon==PB_PODIUM_FALLBACK[1]:
   return
- op=f"first_announcements_novuspb1_v1_{guild_id}_{icon}"
+ op=f"first_announcements_novuspb1_v2_{guild_id}_{icon}"
  try:
   channel=bot.get_channel(GENERAL_CHAT_ID) or await bot.fetch_channel(GENERAL_CHAT_ID)
   if getattr(getattr(channel,"guild",None),"id",None)!=guild_id:

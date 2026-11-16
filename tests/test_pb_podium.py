@@ -23,7 +23,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(content.count(emoji), 1)
         for i in range(4, 11):
             self.assertIn(f"**{i}.** <@{i}>", content)
-        self.assertEqual(bot.podium_icon(1, 999), "🏆")
+        self.assertEqual(bot.podium_icon(1, 999), "#1")
 
     def test_only_top_three_are_larger_and_scoring_follows_the_last_entry(self):
         points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
@@ -38,7 +38,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(lines[i-1].startswith(f"**{i}.** <@{i}>"))
         self.assertEqual(lines[10:], ["", "-# 1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt"])
 
-    def test_boss_champions_use_custom_icon_but_lower_and_raids_unchanged(self):
+    def test_boss_and_raid_champions_use_custom_icon_without_changing_lower_ranks(self):
         items = [record(id=i, member_ids=str(i), ms=1000*i) for i in range(1, 4)]
         blocks = [("Standard", items)]
         boss = str(bot.BossLeaderboard("Araxxor", blocks).to_components())
@@ -48,8 +48,8 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(EMOJIS["novuspb3"], boss)
         self.assertIn("🥈", boss)
         self.assertIn("🥉", boss)
-        self.assertIn("🏆", raid)
-        self.assertNotIn(EMOJIS["novuspb1"], raid)
+        self.assertNotIn("🏆", raid)
+        self.assertIn(EMOJIS["novuspb1"], raid)
 
     def test_novus_boss_does_not_fall_back_to_gold_trophy(self):
         guild = bot.NOVUS_GUILD_ID
@@ -59,6 +59,24 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild: EMOJIS}):
             view = bot.BossLeaderboard("Vorkath", [("Standard", [row])])
             self.assertIn(EMOJIS["novuspb1"], str(view.to_components()))
+
+    def test_snapshot_keeps_all_raid_champions_and_badges_with_long_links(self):
+        leaders = {
+            activity: [record(id=10*j+k+1, guild=123, activity=activity,
+                              ms=1000*(k+1), proof="https://example.org/"+"a"*390)
+                       for k in range(3)]
+            for j, activity in enumerate(bot.RAIDS)
+        }
+        recent = [rows[0] for rows in leaders.values()][:3]
+        panel = bot.fit_snapshot_panel(leaders, recent)
+        text = "\n".join(item.content for item in panel.walk_children()
+                         if isinstance(item, bot.ui.TextDisplay))
+        self.assertLessEqual(len(text.encode("utf-16-le"))//2, 4000)
+        self.assertEqual(text.count(EMOJIS["novuspb1"]), len(bot.RAIDS))
+        self.assertEqual(sum(isinstance(item, bot.ui.Section) and item.accessory.label=="NOVUS #1"
+                             for item in panel.walk_children()), len(bot.RAIDS))
+        self.assertNotIn("🏆", text)
+        self.assertIn("0:03.00", text)
 
     def test_new_announcement_and_legacy_heading(self):
         r = record(guild=123, proof=f"archive:{1:032x}.png")
