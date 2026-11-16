@@ -254,6 +254,7 @@ ACTIVITY_EMOJIS={
 
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"🥈",3:"🥉"}
+PB_HOME_PODIUM_HEADING="# "
 
 
 def podium_icon(rank,guild_id):
@@ -770,7 +771,7 @@ async def on_ready():
     body=old_announcement_text(confirmed)
     standings=body.splitlines()
     live=[n for n in loaded if any(
-     line.startswith(f"### {podium_icon(n,guild.id)} <@") for line in standings
+     line.startswith(f"{PB_HOME_PODIUM_HEADING}{podium_icon(n,guild.id)} <@") for line in standings
     )]
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
@@ -930,7 +931,7 @@ class Home(ui.LayoutView):
   else:
    for index,entry in enumerate(points,1):
     rank_display=podium_icon(index,guild_id)
-    heading="### " if index<=3 else ""
+    heading=PB_HOME_PODIUM_HEADING if index<=3 else ""
     row=(
      f"{heading}{rank_display} <@{entry['member_id']}> · **{entry['points']} pts**\n"
      f"-# *({entry['firsts']} first · {entry['seconds']} second · {entry['thirds']} third)*"
