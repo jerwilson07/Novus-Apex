@@ -89,9 +89,14 @@ class PBLayoutTests(unittest.TestCase):
     def test_subminute_pb_times(self):
         self.assertEqual(bot.parse_ms("30.60"), 30600)
         self.assertEqual(bot.parse_ms("00:30.60"), 30600)
+        self.assertEqual(bot.parse_ms("0:30.60"), 30600)
         self.assertEqual(bot.parse_ms("14:32.60"), 872600)
         self.assertEqual(bot.parse_ms("1:02:03.50"), 3723500)
-        self.assertEqual(bot.fmt(bot.parse_ms("30.60")), "0:30.60")
+        self.assertEqual(bot.fmt(bot.parse_ms("30.60")), "30.60")
+        self.assertEqual(bot.fmt(5000), "05.00")
+        self.assertEqual(bot.fmt(59990), "59.99")
+        self.assertEqual(bot.fmt(60000), "1:00.00")
+        self.assertEqual(bot.fmt(3723500), "1:02:03.50")
         for value in ("60.00", "00:60.00", "-5.00", "0.00"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 bot.parse_ms(value)
@@ -395,7 +400,7 @@ class PBLayoutTests(unittest.TestCase):
         self.assertIn("2026-11-08", text)
         self.assertIn("PB TIME", text)
         self.assertIn("PB DATE", text)
-        self.assertIn("0:12.40", text)
+        self.assertIn("12.40", text)
         self.assertIn("14:32.60", text)
         self.assertFalse(any(isinstance(child, bot.ui.MediaGallery)
                              for child in panel.children))
@@ -532,7 +537,7 @@ class PBLayoutTests(unittest.TestCase):
             and "SUBMITTED PB" in item.children[0].content
         )
         self.assertIn("<@707> · <@808>", submitted_text)
-        self.assertIn("0:46.80", submitted_text)
+        self.assertIn("46.80", submitted_text)
         # The comparison is visually below the submission, not above it.
         components = panel.children
         submitted_index = next(
@@ -546,7 +551,7 @@ class PBLayoutTests(unittest.TestCase):
             and "CURRENT #1" in item.content
         )
         self.assertLess(submitted_index, current_index)
-        self.assertIn("0:37.20", components[current_index].content)
+        self.assertIn("37.20", components[current_index].content)
         self.assertIn("NEW #2", components[submitted_index].accessory.label)
         self.assertTrue(bot.royal_titans_35_ready_to_refresh(submitted))
         self.assertTrue(bot.royal_titans_35_ready_to_refresh(
@@ -595,6 +600,11 @@ class PBLayoutTests(unittest.TestCase):
 
 
 class NewFirstAnnouncementTests(unittest.TestCase):
+    def test_announcement_time_matching_accepts_old_and_short_subminute_formats(self):
+        self.assertTrue(bot.announcement_time_matches("## 30.00", 30000))
+        self.assertTrue(bot.announcement_time_matches("## 0:30.00", 30000))
+        self.assertFalse(bot.announcement_time_matches("## 1:30.00", 30000))
+
     def test_match_only_unambiguous_legacy_announcement(self):
         from types import SimpleNamespace
 
@@ -658,7 +668,7 @@ class NewFirstAnnouncementTests(unittest.TestCase):
         self.assertIn("14:32.60", message)
         self.assertIn("<@456>", message)
         self.assertIn("<@789>", message)
-        self.assertIn("0:12.40", message)
+        self.assertIn("12.40", message)
         self.assertIn("Proof", message)
         self.assertIn("View leaderboard", message)
 
