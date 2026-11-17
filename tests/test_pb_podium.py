@@ -108,7 +108,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         text = "\n".join(parts)
         # Newlines for asserting across components are not sent to Discord.
         self.assertLessEqual(sum(len(part.encode("utf-16-le")) // 2 for part in parts), 4000)
-        self.assertEqual(text.count(EMOJIS["novuspb1"]), len(bot.RAIDS))
+        self.assertEqual(text.count(EMOJIS["novuspb1"]), sum(map(len, leaders.values())))
         self.assertEqual(sum(isinstance(item, bot.ui.Section) and item.accessory.label=="NOVUS #1"
                              for item in panel.walk_children()), len(bot.RAIDS))
         self.assertNotIn("🏆", text)
