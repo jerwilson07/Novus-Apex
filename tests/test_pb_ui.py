@@ -263,7 +263,14 @@ class PBLayoutTests(unittest.TestCase):
         components = board.children[0].children
         section = next(x for x in components if isinstance(x, bot.ui.Section))
         self.assertIn("# #1 ", section.children[0].content)
-        self.assertIn("November 8, 2026", section.children[0].content)
+        self.assertIn("-# ✅ November 8, 2026", section.children[0].content)
+        snapshot = bot.SnapshotPanel(
+            {"Chambers of Xeric": [record(pb_date="2026-11-08")]},
+            [record(pb_date="2026-11-08")],
+        )
+        snapshot_text = "\n".join(item.content for item in snapshot.walk_children()
+                                 if isinstance(item, bot.ui.TextDisplay))
+        self.assertEqual(snapshot_text.count("-# ✅ November 8, 2026"), 2)
         self.assertEqual(section.accessory.label, "NOVUS #1")
         self.assertTrue(section.accessory.disabled)
         self.assertEqual(section.accessory.style, bot.discord.ButtonStyle.success)
