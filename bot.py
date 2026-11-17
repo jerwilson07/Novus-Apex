@@ -844,7 +844,7 @@ async def on_ready():
  if not getattr(bot,"_first_no_gallery_retrofit_started",False):
   bot._first_no_gallery_retrofit_started=True
   start_logged_task(remove_existing_first_announcement_galleries(),name="pb-announcement-gallery-cleanup")
- start_logged_task(tighten_existing_hydra_announcement(),name="pb-announcement-hydra-spacing")
+ start_logged_task(restyle_previous_first_announcements(),name="pb-announcement-style-refresh")
  # Retrieve actual emoji IDs, then update existing leaderboard messages in place.
  for guild in bot.guilds:
   cached=await fetch_activity_emojis(guild)
@@ -2828,8 +2828,15 @@ def qualifies_for_first_place(new_record, previous_leader, current_ranking):
  return previous_leader is None or new_record["ms"]<previous_leader["ms"]
 
 
+def first_announcement_title(activity,variant):
+ if activity in BOSSES and not (
+  variant in ("Normal","Awakened") and variant in BOSSES[activity]
+ ):
+  return clean(activity)
+ return " · ".join(map(clean,(activity,variant))) if variant else clean(activity)
+
+
 def first_place_announcement(r, previous_leader, leaderboard_url=None):
- title=r["activity"]
  names=public_members(r)
  if previous_leader is None:
   comparison="-# First approved PB for this leaderboard."
@@ -2838,7 +2845,7 @@ def first_place_announcement(r, previous_leader, leaderboard_url=None):
   comparison=f"-# Beat the previous #1 by **{improvement}**."
  lines=[
   f"## {podium_icon(1,r['guild'])} NEW NOVUS #1",
-  f"**{clean(title)} · {clean(r['variant'])}**",
+  f"**{first_announcement_title(r['activity'],r['variant'])}**",
   f"## {fmt(r['ms'])}",
   names,
   comparison,
@@ -2879,7 +2886,7 @@ class FirstPlaceAnnouncementCard(PBLayoutView):
   panel.add_item(ui.Section(
    ui.TextDisplay(
     f"## {podium_icon(1,record['guild'])} NEW NOVUS #1\n"
-    f"**{clean(record['activity'])} · {clean(record['variant'])}**\n"
+    f"**{first_announcement_title(record['activity'],record['variant'])}**\n"
     f"-# Achieved by {public_members(record)}"
    ),
    accessory=badge
@@ -3027,6 +3034,15 @@ def announcement_time_matches(text,ms):
             for value in values)
 
 
+def announcement_title_matches(text,record):
+ activity,variant=record["activity"],record["variant"]
+ accepted={
+  f"**{first_announcement_title(activity,variant)}**",
+  f"**{clean(activity)} · {clean(variant)}**",
+ }
+ return any(line.rstrip() in accepted for line in text.splitlines())
+
+
 def match_legacy_first_post(message,approved):
  """Only accept an unambiguously matched, old-style Novus #1 card."""
  text=old_announcement_text(message)
@@ -3035,7 +3051,7 @@ def match_legacy_first_post(message,approved):
  found=[]
  for record in approved:
   if (
-   f"**{clean(record['activity'])} · {clean(record['variant'])}**" in text
+   announcement_title_matches(text,record)
    and announcement_time_matches(text,record["ms"])
    and public_members(record) in text
    and f"PB achieved {pb_date_label(record['pb_date'])}" in text
@@ -3143,7 +3159,7 @@ def matches_first_announcement(message,record):
  body=old_announcement_text(message)
  return all((
   "NEW NOVUS #1" in body,
-  f"**{clean(record['activity'])} · {clean(record['variant'])}**" in body,
+  announcement_title_matches(body,record),
   announcement_time_matches(body,record["ms"]),
   public_members(record) in body,
  ))
@@ -3250,55 +3266,96 @@ async def remove_existing_first_announcement_galleries():
   logging.exception("Unexpected error removing proof galleries from existing #1 posts")
 
 
-async def tighten_existing_hydra_announcement():
- """Update only the Hydra #1 shown in the spacing request."""
- op="compact_hydra_announcement_pb116"
+FIRST_ANNOUNCEMENT_HEADER=re.compile(r"(?m)^#{1,3} [^\n]*\bNEW NOVUS #1[ \t]*$")
+OLD_FIRST_DETAILS=re.compile(
+ r"(?m)^-# PB TIME[ \t]*\n(?:[ \t]*\n)*"
+ r"## ([0-9]+(?::[0-9]{2}){0,2}\.[0-9]{2})[ \t]*\n(?:[ \t]*\n)*"
+ r"(?=-# PB DATE[ \t]*$)"
+)
+DEFAULT_FIRST_BOSS_TITLES={
+ f"**{clean(boss)} · Standard**":f"**{first_announcement_title(boss,'Standard')}**"
+ for boss,variants in BOSSES.items() if variants==["Standard"]
+}
+
+
+def restyle_first_announcement_text(text):
+ text="\n".join(DEFAULT_FIRST_BOSS_TITLES.get(line,line) for line in text.split("\n"))
+ def compact(match):
+  try:
+   time=fmt(parse_ms(match[1]))
+  except ValueError:
+   return match[0]
+  return f"-# PB TIME\n**{time}**\n\n"
+ return OLD_FIRST_DETAILS.sub(compact,text)
+
+
+def announcement_buttons(view):
+ return [
+  (item.label,item.style,item.custom_id,item.url,item.disabled)
+  for item in view.walk_children() if isinstance(item,ui.Button)
+ ]
+
+
+async def restyle_previous_first_announcements():
+ """Refresh bot-authored Novus #1 posts without reposting or changing controls."""
+ op="compact_novus_first_announcements_2026_11"
  if not GENERAL_CHAT_ID or not bot.user:
   return
  try:
   if await store.one("SELECT name FROM one_time_pb_migrations WHERE name=?",(op,)):
    return
-  record=await store.one(
-   """SELECT * FROM submissions WHERE guild=? AND id=? AND status='approved'
-      AND activity='Alchemical Hydra' AND ms=73200 AND pb_date='2026-11-17'""",
-   (NOVUS_GUILD_ID,116),
-  )
-  if not record:
-   return
   channel=bot.get_channel(GENERAL_CHAT_ID) or await bot.fetch_channel(GENERAL_CHAT_ID)
   if getattr(getattr(channel,"guild",None),"id",None)!=NOVUS_GUILD_ID:
    return
-  # The bot's post log locates the screenshot's own announcement at 12:30 UTC.
-  after=datetime(2026,11,17,12,29,tzinfo=timezone.utc)
-  before=datetime(2026,11,17,12,33,tzinfo=timezone.utc)
-  matches=[message async for message in channel.history(limit=50,after=after,before=before)
-           if message.author.id==bot.user.id and matches_first_announcement(message,record)]
-  if len(matches)!=1:
-   logging.warning("Skipped Hydra announcement spacing update: matched messages=%s",len(matches))
-   return
-  message=matches[0]
-  compact=first_announcement_details(record)
-  if compact not in old_announcement_text(message):
-   legacy=compact.replace(f"**{fmt(record['ms'])}**\n\n",f"## {fmt(record['ms'])}\n",1)
-   view=ui.LayoutView.from_message(message,timeout=None)
-   displays=[item for item in view.walk_children()
-             if isinstance(item,ui.TextDisplay) and item.content==legacy]
-   if len(displays)!=1:
-    logging.warning("Skipped Hydra announcement spacing update: time field didn't match")
-    return
-   displays[0].content=compact
-   await message.edit(view=view,allowed_mentions=discord.AllowedMentions.none())
-   message=await channel.fetch_message(message.id)
-  if compact not in old_announcement_text(message):
-   logging.warning("Could not verify Hydra announcement spacing after edit")
-   return
-  async with store.lock:
-   await store.conn.execute("INSERT OR IGNORE INTO one_time_pb_migrations VALUES(?,?)",(op,now()))
-   await store.conn.commit()
-  logging.info("Verified compact PB time and date on Hydra announcement message=%s",message.id)
+  seen=updated=failed=0
+  after=datetime(2026,11,6,tzinfo=timezone.utc)
+  async for message in channel.history(limit=None,after=after):
+   if message.author.id!=bot.user.id:
+    continue
+   component_text=old_announcement_text(message)
+   body=component_text if FIRST_ANNOUNCEMENT_HEADER.search(component_text) else message.content
+   if not FIRST_ANNOUNCEMENT_HEADER.search(body):
+    continue
+   seen+=1
+   expected=restyle_first_announcement_text(body)
+   if body==expected:
+    continue
+   try:
+    mentions=discord.AllowedMentions.none()
+    if body==component_text:
+     view=ui.LayoutView.from_message(message,timeout=None)
+     buttons_before=announcement_buttons(view)
+     for item in view.walk_children():
+      if isinstance(item,ui.TextDisplay):
+       item.content=restyle_first_announcement_text(item.content)
+     await message.edit(view=view,allowed_mentions=mentions)
+     saved=await channel.fetch_message(message.id)
+     saved_text=old_announcement_text(saved)
+     buttons_ok=announcement_buttons(ui.LayoutView.from_message(saved,timeout=None))==buttons_before
+    else:
+     await message.edit(content=expected,allowed_mentions=mentions)
+     saved=await channel.fetch_message(message.id)
+     saved_text=saved.content
+     buttons_ok=True
+    if saved_text==expected and buttons_ok:
+     updated+=1
+     logging.info("Verified refreshed public #1 announcement message=%s unchanged_buttons=%s",
+                  message.id,buttons_ok)
+    else:
+     failed+=1
+     logging.warning("PB announcement formatting readback mismatch message=%s unchanged_buttons=%s",
+                     message.id,buttons_ok)
+    await asyncio.sleep(1.4)
+   except (discord.HTTPException,ValueError):
+    failed+=1
+    logging.exception("Unable to update #1 announcement %s",message.id)
+  if not failed and seen:
+   async with store.lock:
+    await store.conn.execute("INSERT OR IGNORE INTO one_time_pb_migrations VALUES(?,?)",(op,now()))
+    await store.conn.commit()
+  logging.info("Public #1 announcement restyle complete: checked=%s updated=%s failed=%s",seen,updated,failed)
  except (discord.HTTPException,aiosqlite.Error):
-  logging.exception("Unable to tighten existing Hydra announcement spacing")
-
+  logging.exception("Unable to refresh previous Novus #1 announcements")
 
 async def announce_first_place(r, previous_leader):
  # Read the final approved standings, not just the review-card projection.
