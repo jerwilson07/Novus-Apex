@@ -941,9 +941,12 @@ async def on_ready():
      logging.info("Verified raid snapshot custom trophies and green badges: %s/%s; runner-up trophies=%s expected=%s",
                   badges,expected[0],runner_ups,expected[1:])
      snapshot_text=old_announcement_text(message)
+     snapshot_lines=snapshot_text.splitlines()
      logging.info("Verified PB date styling on raid snapshot %s: heavy_check_dates=%s compact_note_present=%s",
-                  message.id,sum(line.startswith("-# ✔️ ") for line in snapshot_text.splitlines()),
+                  message.id,sum(line.startswith("-# ✔️ ") for line in snapshot_lines),
                   "For compact entries" in snapshot_text)
+     logging.info("Verified enlarged raid name headings on snapshot %s: %s/%s",
+                  message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
@@ -1099,6 +1102,10 @@ class Home(PBLayoutView):
   return cls(await calculate_pb_points(g),guild_id=g)
 
 
+def snapshot_raid_heading(activity):
+ return f"# {activity_icon(activity)}{clean(activity)}"
+
+
 class SnapshotPanel(PBLayoutView):
  def __init__(self,raid_leaders=None,recent=None,*,omit=()):
   super().__init__(timeout=None)
@@ -1109,7 +1116,7 @@ class SnapshotPanel(PBLayoutView):
   records.add_item(ui.TextDisplay("### RAID SNAPSHOT"))
   for activity in RAIDS:
    results=raid_leaders.get(activity,[])
-   heading=f"{activity_icon(activity)}**{clean(activity)}**"
+   heading=snapshot_raid_heading(activity)
    if results:
     champion=results[0]
     records.add_item(first_place_section(
