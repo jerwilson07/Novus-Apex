@@ -255,7 +255,7 @@ ACTIVITY_EMOJIS={
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
 NOVUS_PB_TROPHY_IDS={
- 1:1572156661827641374,
+ 1:1572157972702953563,
  2:1572155458423361637,
  3:1572155471606054982,
 }
@@ -2515,7 +2515,7 @@ def old_announcement_text(message):
  return "\n".join(chunks)
 
 
-FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1|<a?:novuspb1:[0-9]+>)(?= NEW NOVUS #1[ \t]*$)")
+FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1|:novuspb1:|<a?:novuspb1:[0-9]+>)(?= NEW NOVUS #1[ \t]*$)")
 
 
 def replace_first_trophy_heading(content,icon):
