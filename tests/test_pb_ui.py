@@ -418,8 +418,9 @@ class PBLayoutTests(unittest.TestCase):
         self.assertIn("The Fractured Archive", text)
         self.assertIn("Achieved by <@456>", text)
         self.assertIn("2026-11-08", text)
-        self.assertIn("PB TIME", text)
-        self.assertIn("PB DATE", text)
+        times = [child.content for child in panel.children
+                 if isinstance(child, bot.ui.TextDisplay) and child.content.startswith("-# PB TIME")]
+        self.assertEqual(times, ["-# PB TIME\n**14:32.60**\n\n-# PB DATE\n**2026-11-08**"])
         self.assertIn("12.40", text)
         self.assertIn("14:32.60", text)
         self.assertFalse(any(isinstance(child, bot.ui.MediaGallery)
@@ -624,6 +625,8 @@ class NewFirstAnnouncementTests(unittest.TestCase):
         self.assertTrue(bot.announcement_time_matches("## 30.00", 30000))
         self.assertTrue(bot.announcement_time_matches("## 0:30.00", 30000))
         self.assertFalse(bot.announcement_time_matches("## 1:30.00", 30000))
+        self.assertTrue(bot.announcement_time_matches("-# PB TIME\n**30.00**", 30000))
+        self.assertFalse(bot.announcement_time_matches("-# PB DATE\n**30.00**", 30000))
 
     def test_match_only_unambiguous_legacy_announcement(self):
         from types import SimpleNamespace
