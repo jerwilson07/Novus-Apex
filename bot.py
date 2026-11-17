@@ -991,11 +991,10 @@ async def on_ready():
      ch=bot.get_channel(snapshot["channel"]) or await bot.fetch_channel(snapshot["channel"])
      message=await ch.fetch_message(snapshot["message"])
      snapshot_rows=[await store.raid_top3(guild.id,raid) for raid in RAIDS]
-     expected_badges=sum(bool(results) for results in snapshot_rows)
      all_snapshot_messages=[message,*snapshot_messages[1:]]
-     badges=sum(count_first_place_slots(page,podium_icon(1,guild.id),heading="")
-                for page in all_snapshot_messages)
-     logging.info("Verified raid snapshot green badges: %s/%s",badges,expected_badges)
+     badges=sum(isinstance(item,ui.Button) and item.label=="NOVUS #1"
+                for page in all_snapshot_messages
+                for item in ui.LayoutView.from_message(page).walk_children())
      snapshot_text="\n".join(old_announcement_text(page) for page in all_snapshot_messages)
      snapshot_lines=snapshot_text.splitlines()
      logging.info("Verified PB date styling on raid snapshot %s: heavy_check_dates=%s compact_note_present=%s",
@@ -1005,12 +1004,14 @@ async def on_ready():
                   message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
      logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s",
                   message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)))
-     expected_rows=[snapshot_result_line(row).split(" · [Proof](",1)[0]
+     expected_rows=[(snapshot_result_line(row).split(" · [Proof](",1)[0],snapshot_team_line(row))
                     for rows in snapshot_rows for row in rows]
-     row_matches=sum(any(line==row or line.startswith(row+" · ") for line in snapshot_lines)
-                     for row in expected_rows)
-     logging.info("Verified compact raid snapshot times and scales on message %s: %s/%s",
-                  message.id,row_matches,len(expected_rows))
+     roster_matches=sum(any(
+      (line==row or line.startswith(row+" · ")) and (not team or following==team)
+      for line,following in zip(snapshot_lines,snapshot_lines[1:]+[""])
+     ) for row,team in expected_rows)
+     logging.info("Verified snapshot times, scales and team rosters on message %s: %s/%s badges=%s",
+                  message.id,roster_matches,len(expected_rows),badges)
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
@@ -1196,6 +1197,11 @@ def snapshot_result_line(r,*,omit=()):
  return f"{podium_icon(1,r['guild'])} **{fmt(r['ms'])}** · {clean(r['variant'])}{suffix}"
 
 
+def snapshot_team_line(r):
+ members=public_members(r)
+ return f"-# {members}" if members else ""
+
+
 class SnapshotPanel(PBLayoutView):
  def __init__(self,raid_leaders=None,recent=None,*,omit=(),activities=None,show_title=True,include_recent=True):
   super().__init__(timeout=None)
@@ -1208,17 +1214,14 @@ class SnapshotPanel(PBLayoutView):
   for activity in RAIDS if activities is None else activities:
    results=raid_leaders.get(activity,[])
    heading=snapshot_raid_heading(activity)
-   if results:
-    champion=results[0]
-    records.add_item(first_place_section(
-     champion,heading+"\n"+snapshot_result_line(champion,omit=omit),
-    ))
-    if results[1:3]:
-     records.add_item(ui.TextDisplay("\n".join(
-      snapshot_result_line(r,omit=omit) for r in results[1:3]
-     )))
-   else:
-    records.add_item(ui.TextDisplay(heading+"\n-# Be the first to claim this record!"))
+   lines=[heading]
+   for r in results[:3]:
+    lines.append(snapshot_result_line(r,omit=omit))
+    if team:=snapshot_team_line(r):
+     lines.append(team)
+   if not results:
+    lines.append("-# Be the first to claim this record!")
+   records.add_item(ui.TextDisplay("\n".join(lines)))
 
   recent_panel=ui.Container(accent_colour=BLUE)
   updated=discord_updated(recent[0]["updated"]) if recent else None
