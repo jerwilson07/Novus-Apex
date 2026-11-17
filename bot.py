@@ -271,17 +271,21 @@ def card_rank_icon(rank,guild_id):
 
 
 # Preserve a name-width inset in Discord subtext without indenting the legend.
-PB_TROPHY_COUNT_INDENT="\u200b\u2003\u2002"
+PB_TROPHY_COUNT_INDENTS=(
+ "\u200b\u2003\u2003\u2002",  # Podium headings use the wider trophy emoji.
+ "\u200b\u2003\u2002\u2005",  # Single-digit numbered rows.
+ "\u200b\u2003\u2003\u2005",  # Two-digit numbered rows.
+)
 
 
-def top10_trophy_subtext(guild_id,values,*,scoring=False):
+def top10_trophy_subtext(guild_id,values,*,scoring=False,rank=4):
  prefix="Scoring · " if scoring else ""
  parts=(
   f"{podium_icon(rank,guild_id)} "
   + (f"+{value} {'pt' if value==1 else 'pts'}" if scoring else f"× {value}")
   for rank,value in enumerate(values,1)
  )
- indent="" if scoring else PB_TROPHY_COUNT_INDENT
+ indent="" if scoring else PB_TROPHY_COUNT_INDENTS[0 if rank<=3 else 2 if rank>=10 else 1]
  return "-# "+indent+"*"+prefix+" · ".join(parts)+"*"
 
 
@@ -816,7 +820,8 @@ async def on_ready():
     )]
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
-    count_pattern=re.escape("-# "+PB_TROPHY_COUNT_INDENT)+r"\*"+" · ".join(
+    count_indent_pattern="(?:"+"|".join(map(re.escape,PB_TROPHY_COUNT_INDENTS))+")"
+    count_pattern="-# "+count_indent_pattern+r"\*"+" · ".join(
      rf"{re.escape(podium_icon(rank,guild.id))} × [0-9]+"
      for rank in range(1,4)
     )+r"\*"
@@ -976,7 +981,7 @@ def top10_standings_text(points,guild_id):
   rank=entry["rank"]
   icon=podium_icon(rank,guild_id)
   heading=PB_TOP10_PODIUM_HEADING if rank<=3 else ""
-  breakdown=top10_trophy_subtext(guild_id,(entry["firsts"],entry["seconds"],entry["thirds"]))
+  breakdown=top10_trophy_subtext(guild_id,(entry["firsts"],entry["seconds"],entry["thirds"]),rank=rank)
   return f"{heading}{icon} {names} · **{entry['points']} pts**\n{breakdown}"
 
  def render(rows):

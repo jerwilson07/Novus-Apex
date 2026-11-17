@@ -27,8 +27,12 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"### {EMOJIS[f'novuspb{rank}']} <@{rank}>", standings)
         for rank in range(4, 11):
             self.assertIn(f"**{rank}.** <@{rank}>", standings)
-        counts = f"-# \u200b\u2003\u2002*{EMOJIS['novuspb1']} × 1 · {EMOJIS['novuspb2']} × 0 · {EMOJIS['novuspb3']} × 0*"
-        self.assertEqual(standings.count(counts), 10)
+        counts = f"*{EMOJIS['novuspb1']} × 1 · {EMOJIS['novuspb2']} × 0 · {EMOJIS['novuspb3']} × 0*"
+        insets = ["\u200b\u2003\u2003\u2002"] * 3 + ["\u200b\u2003\u2002\u2005"] * 6 + ["\u200b\u2003\u2003\u2005"]
+        self.assertEqual(
+            [line for line in standings.splitlines() if line.endswith(counts)],
+            [f"-# {inset}{counts}" for inset in insets],
+        )
         legend = f"-# *Scoring · {EMOJIS['novuspb1']} +5 pts · {EMOJIS['novuspb2']} +3 pts · {EMOJIS['novuspb3']} +1 pt*"
         self.assertTrue(standings.endswith(legend))
         self.assertLessEqual(len(view.children[0].children), 10)
