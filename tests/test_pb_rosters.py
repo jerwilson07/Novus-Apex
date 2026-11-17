@@ -23,7 +23,7 @@ class PBRosterTests(unittest.TestCase):
                       member_ids="707", submitter=808)
         leader = dict(ezra, id=40, ms=37200, member_ids="222,333")
         board = bot.BossLeaderboard("Royal Titans", [("Standard", [leader, ezra])])
-        self.assertIn("**0:46.80** · <@707> · What A Piety", view_text(board))
+        self.assertIn("**46.80** · <@707> · What A Piety", view_text(board))
         self.assertIn("<@707> · What A Piety", view_text(bot.Review(ezra)))
         with patch.object(bot, "royal_titans_35_partner_id", 808):
             self.assertEqual(bot.public_members(ezra), "<@707> · <@808>")

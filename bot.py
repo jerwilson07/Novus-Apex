@@ -351,7 +351,11 @@ def parse_ms(s):
 def fmt(ms):
  s,m=divmod(ms,1000); minute,sec=divmod(s,60); hour,minute=divmod(minute,60)
  cs=m//10
- return f"{hour}:{minute:02}:{sec:02}.{cs:02}" if hour else f"{minute}:{sec:02}.{cs:02}"
+ if hour:
+  return f"{hour}:{minute:02}:{sec:02}.{cs:02}"
+ if minute:
+  return f"{minute}:{sec:02}.{cs:02}"
+ return f"{sec:02}.{cs:02}"
 
 def proof_looks_like_media(url):
  try:
@@ -946,6 +950,9 @@ async def on_ready():
                   sum(bool(proof_text(r)) for _,rows in blocks for r in rows),
                   len(re.findall(r" · PB #\d+",board_text)),
                   sum(line.startswith("## ") and line.endswith(clean(activity)) for line in board_text.splitlines()))
+     if activity=="The Fractured Archive":
+      logging.info("Verified TFA 5-Man card present=%s redundant_jump_link=%s",
+                   "### 5-Man" in board_text.splitlines(),"[5-Man ↓](" in board_text)
     for i,total in enumerate(runner_ups):
      verified_runner_up_slots[i]+=total
     if runner_ups!=(count,count) or (count and not {2,3}.issubset(loaded)):
@@ -1550,6 +1557,12 @@ def linked_board_view(factory,activity,blocks,*,show_title=True,text_limit=PB_PU
  )
 
 
+def raid_continuation_label(activity,blocks):
+ label=blocks[0][0] if blocks else ""
+ # The Fractured Archive's 5-Man card is directly below the other scales.
+ return None if activity=="The Fractured Archive" and label=="5-Man" else label
+
+
 def raid_board_page_plan(activity,blocks):
  full=RaidLeaderboard(activity,blocks)
  if pb_view_text_units(full)<=PB_PUBLIC_TEXT_LIMIT:
@@ -1572,7 +1585,7 @@ def raid_board_page_plan(activity,blocks):
  if current:
   groups.append(current)
  return [
-  (group[0][0] if group else "",linked_board_view(
+  (raid_continuation_label(activity,group),linked_board_view(
    RaidLeaderboard,activity,group,show_title=index==0,
    text_limit=PB_PUBLIC_TEXT_LIMIT-(180 if index<len(groups)-1 else 0),
   ))
@@ -2984,6 +2997,14 @@ async def refresh_first_announcement_trophy_icons(guild_id):
   logging.exception("Could not refresh existing #1 announcement trophy icons")
 
 
+def announcement_time_matches(text,ms):
+ time=fmt(ms)
+ headings={f"## {time}"}
+ if ms<60000:
+  headings.add(f"## 0:{time}")
+ return any(line.rstrip() in headings for line in text.splitlines())
+
+
 def match_legacy_first_post(message,approved):
  """Only accept an unambiguously matched, old-style Novus #1 card."""
  text=old_announcement_text(message)
@@ -2993,7 +3014,7 @@ def match_legacy_first_post(message,approved):
  for record in approved:
   if (
    f"**{clean(record['activity'])} · {clean(record['variant'])}**" in text
-   and f"## {fmt(record['ms'])}" in text
+   and announcement_time_matches(text,record["ms"])
    and public_members(record) in text
    and f"PB achieved {pb_date_label(record['pb_date'])}" in text
   ):
@@ -3101,7 +3122,7 @@ def matches_first_announcement(message,record):
  return all((
   "NEW NOVUS #1" in body,
   f"**{clean(record['activity'])} · {clean(record['variant'])}**" in body,
-  f"## {fmt(record['ms'])}" in body,
+  announcement_time_matches(body,record["ms"]),
   public_members(record) in body,
  ))
 
