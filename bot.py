@@ -394,6 +394,7 @@ class Store:
   CREATE TABLE IF NOT EXISTS panel_banners(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS panel_bosses(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS boss_board_messages(guild INTEGER NOT NULL,activity TEXT NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity));
+  CREATE TABLE IF NOT EXISTS raid_board_pages(guild INTEGER NOT NULL,activity TEXT NOT NULL,page INTEGER NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity,page));
   CREATE TABLE IF NOT EXISTS panel_snapshot(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS panel_footer(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS proof_threads(guild INTEGER PRIMARY KEY,parent INTEGER NOT NULL,thread INTEGER NOT NULL);
@@ -513,6 +514,21 @@ class Store:
     "DELETE FROM boss_board_messages WHERE guild=?",
     (g,)
    )
+   await self.conn.execute("DELETE FROM raid_board_pages WHERE guild=?",(g,))
+   await self.conn.commit()
+ async def raid_pages(self,g,activity=None):
+  if activity is None:
+   return await self.all("SELECT * FROM raid_board_pages WHERE guild=? ORDER BY activity,page",(g,))
+  return await self.all("SELECT * FROM raid_board_pages WHERE guild=? AND activity=? ORDER BY page",(g,activity))
+ async def set_raid_page(self,g,activity,index,ch,msg):
+  async with self.lock:
+   await self.conn.execute("""INSERT INTO raid_board_pages VALUES(?,?,?,?,?)
+    ON CONFLICT(guild,activity,page) DO UPDATE SET channel=excluded.channel,message=excluded.message""",
+    (g,activity,index,ch,msg))
+   await self.conn.commit()
+ async def remove_raid_page(self,g,activity,index):
+  async with self.lock:
+   await self.conn.execute("DELETE FROM raid_board_pages WHERE guild=? AND activity=? AND page=?",(g,activity,index))
    await self.conn.commit()
  async def snapshot_panel(self,g):return await self.one("SELECT * FROM panel_snapshot WHERE guild=?",(g,))
  async def set_snapshot_panel(self,g,ch,msg):
@@ -884,13 +900,22 @@ async def on_ready():
    try:
     ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
     message=await ch.fetch_message(record["message"])
-    saved=await write_linked_board(ch,guild.id,activity,message=message)
+    published=[]
+    saved=await write_linked_board(ch,guild.id,activity,message=message,published=published)
     factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
-    count=sum(bool(results) for _,results in await factory.blocks(guild.id,activity))
+    blocks=await factory.blocks(guild.id,activity)
+    count=sum(bool(results) for _,results in blocks)
     expected_icon=podium_icon(1,guild.id)
-    matched=count_first_place_slots(saved,expected_icon)
+    matched=sum(count_first_place_slots(page,expected_icon) for page in published)
     verified_first_slots+=matched
-    runner_ups=count_runner_up_trophies(saved,guild.id)
+    runner_ups=tuple(map(sum,zip(*(count_runner_up_trophies(page,guild.id) for page in published))))
+    if activity in RAIDS:
+     board_text="\n".join(old_announcement_text(page) for page in published)
+     logging.info("Verified public proof links for %s: messages=%s clickable=%s available=%s compact_refs=%s raid_titles=%s",
+                  activity,len(published),board_text.count("[Proof]("),
+                  sum(bool(proof_text(r)) for _,rows in blocks for r in rows),
+                  len(re.findall(r" · PB #\d+",board_text)),
+                  sum(line.startswith("## ") and line.endswith(clean(activity)) for line in board_text.splitlines()))
     for i,total in enumerate(runner_ups):
      verified_runner_up_slots[i]+=total
     if runner_ups!=(count,count) or (count and not {2,3}.issubset(loaded)):
@@ -1175,10 +1200,10 @@ def pb_view_text_units(view):
             if isinstance(item,ui.TextDisplay))
 
 
-def fit_public_proof_links(render,priority_groups,context):
+def fit_public_proof_links(render,priority_groups,context,*,text_limit=PB_PUBLIC_TEXT_LIMIT):
  full=render(())
  full_size=pb_view_text_units(full)
- if full_size<=PB_PUBLIC_TEXT_LIMIT:
+ if full_size<=text_limit:
   return full
 
  # Fit the most links within each priority tier. Measuring the rendered
@@ -1197,7 +1222,7 @@ def fit_public_proof_links(render,priority_groups,context):
  no_links=frozenset(seen)
  base_size=pb_view_text_units(render(no_links))
  costs={sid:pb_view_text_units(render(no_links-{sid}))-base_size for sid in seen}
- budget=PB_PUBLIC_TEXT_LIMIT-base_size
+ budget=text_limit-base_size
  omit=set(no_links)
  for sid,cost in costs.items():
   if cost<=0:
@@ -1211,8 +1236,8 @@ def fit_public_proof_links(render,priority_groups,context):
  fitted=render(omit)
  used=pb_view_text_units(fitted)
  logging.info("PB proof link fit for %s: kept=%s omitted=%s text=%s/%s remaining=%s smallest_omitted_cost=%s",
-              context,len(seen)-len(omit),len(omit),used,PB_PUBLIC_TEXT_LIMIT,
-              PB_PUBLIC_TEXT_LIMIT-used,min((costs[sid] for sid in omit),default=None))
+              context,len(seen)-len(omit),len(omit),used,text_limit,
+              text_limit-used,min((costs[sid] for sid in omit),default=None))
  return fitted
 
 
@@ -1400,16 +1425,17 @@ class BossLeaderboard(PBLayoutView):
 
 
 class RaidLeaderboard(PBLayoutView):
- def __init__(self,activity,blocks,*,omit=()):
+ def __init__(self,activity,blocks,*,omit=(),show_title=True):
   super().__init__(timeout=None)
 
   title=f"## {activity_icon(activity)}{clean(activity)}"
   # A full bracket takes seven components. Compact brackets take five,
   # including the green badge. Eight populated brackets use all 40, so
   # merge the title and variant headings into existing displays in that case.
-  compact=2+sum(7 if results else 3 for _,results in blocks)>40
-  merge_title=compact and 2+sum(5 if results else 2 for _,results in blocks)>40
-  if not merge_title:
+  title_components=2 if show_title else 0
+  compact=title_components+sum(7 if results else 3 for _,results in blocks)>40
+  merge_title=show_title and compact and 2+sum(5 if results else 2 for _,results in blocks)>40
+  if show_title and not merge_title:
    heading=ui.Container(accent_colour=GOLD)
    heading.add_item(ui.TextDisplay(title))
    self.add_item(heading)
@@ -1444,14 +1470,86 @@ class RaidLeaderboard(PBLayoutView):
   return cls(activity,await cls.blocks(g,activity))
 
 
-def linked_board_view(factory,activity,blocks):
+def linked_board_view(factory,activity,blocks,*,show_title=True,text_limit=PB_PUBLIC_TEXT_LIMIT):
  if factory is not RaidLeaderboard:
   return factory(activity,blocks)
  return fit_public_proof_links(
-  lambda omit:factory(activity,blocks,omit=omit),
+  lambda omit:factory(activity,blocks,omit=omit,show_title=show_title),
   ([rows[rank] for _,rows in blocks if rank<len(rows)] for rank in range(5)),
-  activity,
+  activity,text_limit=text_limit,
  )
+
+
+def raid_board_page_plan(activity,blocks):
+ full=RaidLeaderboard(activity,blocks)
+ if pb_view_text_units(full)<=PB_PUBLIC_TEXT_LIMIT:
+  return [(blocks[0][0],full)] if blocks else [("",full)]
+
+ # Every continuation starts at a scale boundary and reuses the same gold
+ # cards. Leave room on each nonfinal message for its next-scale jump link.
+ groups=[]
+ current=[]
+ for block in blocks:
+  show_title=not groups
+  candidate=RaidLeaderboard(activity,current+[block],show_title=show_title)
+  if (pb_view_text_units(candidate)<=PB_PUBLIC_TEXT_LIMIT-180
+      and sum(1 for _ in candidate.walk_children())<=39):
+   current.append(block)
+   continue
+  if current or show_title:
+   groups.append(current)
+  current=[block]
+ if current:
+  groups.append(current)
+ return [
+  (group[0][0] if group else "",linked_board_view(
+   RaidLeaderboard,activity,group,show_title=index==0,
+   text_limit=PB_PUBLIC_TEXT_LIMIT-(180 if index<len(groups)-1 else 0),
+  ))
+  for index,group in enumerate(groups)
+ ]
+
+
+def raid_page_link(label,url):
+ return ui.TextDisplay(f"### [{clean(label)} ↓]({url})")
+
+
+async def publish_raid_board_pages(channel,g,activity,message,blocks,mentions):
+ plan=raid_board_page_plan(activity,blocks)
+ tracked={r["page"]:r for r in await store.raid_pages(g,activity)}
+ saved=[message]
+ if message is None:
+  saved[0]=await channel.send(view=plan[0][1],allowed_mentions=mentions)
+ # Send new pages in scale order. On an existing board, edit only the
+ # tracked posts and keep its original directory destination.
+ for i,(_,view) in enumerate(plan[1:],1):
+  page=tracked.get(i)
+  existing=None
+  if page and page["channel"]==channel.id:
+   try:
+    existing=await channel.fetch_message(page["message"])
+   except discord.NotFound:
+    pass
+  if existing is None:
+   existing=await channel.send(view=view,allowed_mentions=mentions)
+   await store.set_raid_page(g,activity,i,channel.id,existing.id)
+  saved.append(existing)
+ for i in reversed(range(len(plan))):
+  _,view=plan[i]
+  if i<len(plan)-1:
+   view.add_item(raid_page_link(plan[i+1][0],saved[i+1].jump_url))
+  if i or message is not None or len(plan)>1:
+   saved[i]=await saved[i].edit(view=view,allowed_mentions=mentions,attachments=[])
+ for i,page in tracked.items():
+  if i<len(plan):
+   continue
+  if page["channel"]==channel.id:
+   try:
+    await channel.get_partial_message(page["message"]).delete()
+   except discord.NotFound:
+    pass
+  await store.remove_raid_page(g,activity,i)
+ return saved
 
 
 def proof_attachment_name(r,path):
@@ -1669,7 +1767,7 @@ async def restore_staff_proof_cards(guild_id):
  logging.info("PB staff proof card refresh complete for guild %s: restored=%s",guild_id,updated)
 
 
-async def write_linked_board(channel,g,activity,message=None,*,archived_only=False):
+async def write_linked_board(channel,g,activity,message=None,*,archived_only=False,published=None):
  factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
  async with PUBLIC_PROOF_LOCK:
   blocks=await factory.blocks(g,activity)
@@ -1690,10 +1788,16 @@ async def write_linked_board(channel,g,activity,message=None,*,archived_only=Fal
    if proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(ref),at):
     await cache_proof_from_review(r,path)
   mentions=discord.AllowedMentions.none()
-  view=linked_board_view(factory,activity,blocks)
-  if message is None:
-   return await channel.send(view=view,allowed_mentions=mentions)
-  return await message.edit(view=view,allowed_mentions=mentions,attachments=[])
+  if factory is RaidLeaderboard:
+   messages=await publish_raid_board_pages(channel,g,activity,message,blocks,mentions)
+  else:
+   view=linked_board_view(factory,activity,blocks)
+   saved=(await channel.send(view=view,allowed_mentions=mentions) if message is None
+          else await message.edit(view=view,allowed_mentions=mentions,attachments=[]))
+   messages=[saved]
+  if published is not None:
+   published.extend(messages)
+  return messages[0]
 
 
 async def count_reachable_proof_images(urls,*,allow_video=False):
@@ -3353,6 +3457,7 @@ async def pbpanel(i:discord.Interaction):
  tracked_records.extend(
   await store.boss_boards(i.guild_id)
  )
+ tracked_records.extend(await store.raid_pages(i.guild_id))
 
  seen_messages=set()
  for record in tracked_records:
