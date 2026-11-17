@@ -96,6 +96,46 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<@1>", view.standing_parts[0])
         self.assertIn("<@2>", view.standing_parts[0])
 
+    async def test_clears_alt_only_on_bot_owned_podium_copies(self):
+        rows = [dict(rank=i, member_id=i, points=30-i, firsts=5, seconds=2, thirds=1)
+                for i in range(1, 11)]
+        png = b"original podium image"
+        view = bot.Home(rows, guild_id=bot.NOVUS_GUILD_ID, podium=png)
+        image_url = f"https://cdn.discordapp.com/attachments/1/2/{bot.PODIUM_FILENAME}?ex=1"
+        podium = bot.podium_gallery_tile(view)
+        podium.media = image_url
+        podium.description = "Historical counts"
+        # A different gallery is not part of the cleanup.
+        view.children[0].children[0].items[0].description = "Keep banner description"
+
+        def message(v, author=30):
+            return SimpleNamespace(
+                components=[_component_factory(c) for c in v.to_components()],
+                attachments=[], author=SimpleNamespace(id=author),
+            )
+
+        async def edit(**kwargs):
+            self.assertEqual(kwargs["attachments"][0].fp.read(), png)
+            edited = kwargs["view"]
+            self.assertTrue(edited.is_finished())
+            self.assertFalse(kwargs["allowed_mentions"].users)
+            self.assertEqual(edited.children[0].children[0].items[0].description, "Keep banner description")
+            return message(edited)
+
+        old = message(view)
+        other_author = message(view, author=20)
+        old.edit = AsyncMock(side_effect=edit)
+        other_author.edit = AsyncMock()
+        cdn = AsyncMock(return_value=png)
+        client = SimpleNamespace(user=SimpleNamespace(id=30), http=SimpleNamespace(get_from_cdn=cdn))
+        with patch.object(bot, "bot", client):
+            self.assertIsNone(await bot.clear_podium_badge(other_author))
+            self.assertTrue(await bot.clear_podium_badge(old))
+            self.assertIsNone(await bot.clear_podium_badge(message(old.edit.await_args.kwargs["view"])))
+        cdn.assert_awaited_once_with(image_url)
+        other_author.edit.assert_not_called()
+        old.edit.assert_awaited_once()
+
     def test_exact_ties_share_ranks_and_keep_cutoff_ties(self):
         def score(member_id, firsts):
             return dict(member_id=member_id, firsts=firsts, seconds=0,

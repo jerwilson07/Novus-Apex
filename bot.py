@@ -923,6 +923,8 @@ async def on_ready():
                  numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
+  if guild.id==NOVUS_GUILD_ID:
+   start_logged_task(clear_old_podium_badges(guild),name="pb-podium-badge-backfill")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
   footer=await store.footer(guild.id)
   panel=await store.panel(guild.id)
@@ -3035,6 +3037,122 @@ def old_announcement_text(message):
  for component in getattr(message,"components",()) or ():
   walk(component)
  return "\n".join(chunks)
+
+
+# Only snapshot copies posted between the original podium launch and the
+# deployment that stopped adding alt text could need this backfill.
+PODIUM_ALT_WINDOW=(
+ datetime(2026,11,17,15,13,tzinfo=timezone.utc),
+ datetime(2026,11,17,15,21,tzinfo=timezone.utc),
+)
+
+
+def podium_gallery_tile(view):
+ return next((tile for item in view.walk_children() if isinstance(item,ui.MediaGallery)
+              for tile in item.items
+              if urlparse(tile.media.url).path.rsplit("/",1)[-1]==PODIUM_FILENAME
+              or tile.media.url==f"attachment://{PODIUM_FILENAME}"),None)
+
+
+async def clear_podium_badge(message):
+ """Return None if unrelated, or whether the in-place edit was verified."""
+ if message.author.id!=bot.user.id or PB_TOP10_TITLE not in old_announcement_text(message).splitlines():
+  return None
+ view=ui.LayoutView.from_message(message,timeout=None)
+ tile=podium_gallery_tile(view)
+ if tile is None or not tile.description:
+  return None
+ original_text=old_announcement_text(message)
+ buttons=announcement_buttons(view)
+ url=urlparse(tile.media.url)
+ if url.scheme!="https" or url.hostname!="cdn.discordapp.com":
+  return False
+ png=await asyncio.wait_for(bot.http.get_from_cdn(tile.media.url),timeout=10)
+ tile.media=f"attachment://{PODIUM_FILENAME}"
+ tile.description=None
+ other=[a for a in message.attachments if a.filename!=PODIUM_FILENAME]
+ # These are snapshot copies. Let the globally registered Home view keep
+ # handling buttons instead of registering inert callbacks from the readback.
+ view.stop()
+ file=discord.File(BytesIO(png),filename=PODIUM_FILENAME)
+ try:
+  updated=await message.edit(view=view,attachments=[*other,file],
+                             allowed_mentions=discord.AllowedMentions.none())
+ finally:
+  file.close()
+ updated_view=ui.LayoutView.from_message(updated,timeout=None)
+ updated_tile=podium_gallery_tile(updated_view)
+ return (updated_tile is not None and not updated_tile.description
+         and old_announcement_text(updated)==original_text
+         and announcement_buttons(updated_view)==buttons)
+
+
+async def clear_old_podium_badges(guild):
+ """One-time audit of podium copies, without re-ranking or reposting them."""
+ if not bot.user or not guild.me:
+  return
+ op=f"podium_alt_badge_backfill_{guild.id}"
+ if await store.one("SELECT name FROM one_time_pb_migrations WHERE name=?",(op,)):
+  return
+ after,before=PODIUM_ALT_WINDOW
+
+ def readable(channel):
+  perms=channel.permissions_for(guild.me)
+  return perms.view_channel and perms.read_message_history
+
+ destinations={ch.id:ch for ch in guild.channels
+               if isinstance(ch,discord.abc.Messageable) and readable(ch)}
+ failed_scans=0
+ try:
+  destinations.update((thread.id,thread) for thread in await guild.active_threads() if readable(thread))
+ except discord.HTTPException:
+  failed_scans+=1
+  logging.exception("Could not list active threads for the PB podium audit")
+ # An eligible thread could have been manually archived since the rollout.
+ for parent in guild.channels:
+  if not isinstance(parent,(discord.TextChannel,discord.ForumChannel)) or not readable(parent):
+   continue
+  modes=[{}]
+  if isinstance(parent,discord.TextChannel) and not parent.is_news():
+   modes.append({"private":True} if parent.permissions_for(guild.me).manage_threads
+                else {"private":True,"joined":True})
+  for mode in modes:
+   try:
+    async for thread in parent.archived_threads(limit=100 if mode.get("joined") else None,**mode):
+     if not mode.get("joined") and thread.archive_timestamp<after:
+      break
+     if thread.archive_timestamp>=after and readable(thread):
+      destinations[thread.id]=thread
+   except (discord.Forbidden,discord.NotFound):
+    continue
+   except discord.HTTPException:
+    failed_scans+=1
+    logging.warning("Could not list archived threads for PB podiums in channel %s",parent.id)
+
+ changed=failed_edits=0
+ for channel in destinations.values():
+  try:
+   async for message in channel.history(limit=None,after=after,before=before):
+    try:
+     result=await clear_podium_badge(message)
+     if result is not None:
+      changed+=int(result)
+      failed_edits+=int(not result)
+      await asyncio.sleep(1.4)
+    except (discord.DiscordException,aiohttp.ClientError,TimeoutError,ValueError):
+     failed_edits+=1
+     logging.exception("Could not clear ALT from PB podium message %s",message.id)
+  except (discord.Forbidden,discord.NotFound):
+   continue
+  except discord.HTTPException:
+   failed_scans+=1
+   logging.warning("Could not check PB podiums in channel %s",channel.id)
+ if not (failed_scans or failed_edits):
+  async with store.lock:
+   await store.conn.execute("INSERT OR IGNORE INTO one_time_pb_migrations VALUES (?,?)",(op,now()))
+   await store.conn.commit()
+ logging.info("Historical PB podium ALT audit complete: destinations=%s updated=%s failed_edits=%s failed_scans=%s",
+              len(destinations),changed,failed_edits,failed_scans)
 
 
 FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1)(?= NEW NOVUS #1[ \t]*$)")
