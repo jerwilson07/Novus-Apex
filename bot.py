@@ -395,6 +395,7 @@ class Store:
   CREATE TABLE IF NOT EXISTS panel_bosses(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS boss_board_messages(guild INTEGER NOT NULL,activity TEXT NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity));
   CREATE TABLE IF NOT EXISTS raid_board_pages(guild INTEGER NOT NULL,activity TEXT NOT NULL,page INTEGER NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity,page));
+  CREATE TABLE IF NOT EXISTS pb_superseded_public_posts(guild INTEGER NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,channel,message));
   CREATE TABLE IF NOT EXISTS panel_snapshot(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS panel_footer(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS proof_threads(guild INTEGER PRIMARY KEY,parent INTEGER NOT NULL,thread INTEGER NOT NULL);
@@ -529,6 +530,35 @@ class Store:
  async def remove_raid_page(self,g,activity,index):
   async with self.lock:
    await self.conn.execute("DELETE FROM raid_board_pages WHERE guild=? AND activity=? AND page=?",(g,activity,index))
+   await self.conn.commit()
+ async def switch_public_board_tail(self,g,ch,replacements,superseded):
+  async with self.lock:
+   try:
+    for key,ids in replacements.items():
+     primary,*extra=ids
+     if key==SNAPSHOT_CONTINUATION_KEY:
+      await self.conn.execute("UPDATE panel_snapshot SET message=? WHERE guild=? AND channel=?",(primary,g,ch))
+     elif key==PB_FOOTER_KEY:
+      await self.conn.execute("UPDATE panel_footer SET message=? WHERE guild=? AND channel=?",(primary,g,ch))
+     else:
+      await self.conn.execute("UPDATE boss_board_messages SET message=? WHERE guild=? AND activity=? AND channel=?",
+                              (primary,g,key,ch))
+     await self.conn.execute("DELETE FROM raid_board_pages WHERE guild=? AND activity=?",(g,key))
+     if extra:
+      await self.conn.executemany("INSERT INTO raid_board_pages VALUES(?,?,?,?,?)",
+                                 [(g,key,i,ch,sid) for i,sid in enumerate(extra,1)])
+    await self.conn.executemany("INSERT OR IGNORE INTO pb_superseded_public_posts VALUES(?,?,?)",
+                               [(g,ch,sid) for sid in superseded])
+    await self.conn.commit()
+   except BaseException:
+    await self.conn.rollback()
+    raise
+ async def superseded_public_posts(self,g,ch):
+  return await self.all("SELECT message FROM pb_superseded_public_posts WHERE guild=? AND channel=?",(g,ch))
+ async def forget_superseded_public_post(self,g,ch,sid):
+  async with self.lock:
+   await self.conn.execute("DELETE FROM pb_superseded_public_posts WHERE guild=? AND channel=? AND message=?",
+                           (g,ch,sid))
    await self.conn.commit()
  async def snapshot_panel(self,g):return await self.one("SELECT * FROM panel_snapshot WHERE guild=?",(g,))
  async def set_snapshot_panel(self,g,ch,msg):
@@ -984,6 +1014,8 @@ async def on_ready():
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
+  if proof_boards_ok and snapshot_ok:
+   await repair_public_board_order(guild.id)
   logging.info("Finished refreshing inline proof links for guild %s",guild.id)
   if proof_boards_ok and snapshot_ok:
    try:
@@ -1545,6 +1577,7 @@ def raid_board_page_plan(activity,blocks):
 
 
 SNAPSHOT_CONTINUATION_KEY="__raid_snapshot__"
+PB_FOOTER_KEY="__pb_footer__"
 
 
 def snapshot_page_plan(leaders,recent):
@@ -1873,6 +1906,144 @@ async def write_linked_board(channel,g,activity,message=None,*,archived_only=Fal
   return messages[0]
 
 
+def public_board_tail_to_reflow(roots,pages):
+ """Find the first leaderboard whose tracked pages aren't in place."""
+ extra={}
+ for page in sorted(pages,key=lambda row:row["page"]):
+  extra.setdefault(page["activity"],[]).append(page["message"])
+ ordered=sorted(roots.items(),key=lambda item:item[1]["message"])
+ for i,(key,root) in enumerate(ordered):
+  ids=[root["message"],*extra.get(key,())]
+  following=ordered[i+1][1]["message"] if i+1<len(ordered) else None
+  if ids!=sorted(set(ids)) or (following is not None and ids[-1]>=following):
+   return [activity for activity,_ in ordered[i:]]
+ return []
+
+
+async def public_tail_views(g,key):
+ if key==SNAPSHOT_CONTINUATION_KEY:
+  leaders={raid:await store.raid_top3(g,raid) for raid in RAIDS}
+  return snapshot_page_plan(leaders,await store.recent_approved(g,3))
+ if key in RAIDS:
+  return raid_board_page_plan(key,await RaidLeaderboard.blocks(g,key))
+ return [("",BossLeaderboard(key,await BossLeaderboard.blocks(g,key)))]
+
+
+async def delete_public_board_post(channel,sid):
+ try:
+  msg=await channel.fetch_message(sid)
+  if msg.author.id!=bot.user.id:
+   logging.warning("Left a non-Novus post untouched during board reordering: %s",sid)
+   return
+  await msg.delete()
+ except discord.NotFound:
+  pass
+
+
+async def publish_public_board_tail(channel,g,tail,roots,pages,home):
+ """Stage all replacements before switching the directory or retiring posts."""
+ staged=[]
+ replacements={}
+ mentions=discord.AllowedMentions.none()
+ try:
+  for key in tail:
+   if key==PB_FOOTER_KEY:
+    msg=await channel.send(
+     pb_scroll_to_top_text(f"https://discord.com/channels/{g}/{home['channel']}/{home['message']}"),
+     allowed_mentions=mentions,silent=True,
+    )
+    staged.append(msg)
+    replacements[key]=[msg.id]
+    continue
+   plan=await public_tail_views(g,key)
+   messages=[]
+   for _,view in plan:
+    msg=await channel.send(view=view,allowed_mentions=mentions,silent=True)
+    messages.append(msg)
+    staged.append(msg)
+   for i,(_,view) in enumerate(plan[:-1]):
+    view.add_item(raid_page_link(plan[i+1][0],messages[i+1].jump_url))
+    await messages[i].edit(view=view,allowed_mentions=mentions)
+   replacements[key]=[msg.id for msg in messages]
+  replaced=set(tail)
+  superseded={roots[key]["message"] for key in replaced}
+  superseded.update(page["message"] for page in pages if page["activity"] in replaced)
+  await store.switch_public_board_tail(g,channel.id,replacements,superseded)
+ except Exception:
+  for msg in reversed(staged):
+   try:
+    await msg.delete()
+   except discord.HTTPException:
+    logging.warning("Could not remove a staged PB post after reordering failed: %s",msg.id)
+  raise
+ return replacements
+
+
+async def repair_public_board_order(g):
+ if g!=NOVUS_GUILD_ID:
+  return
+ async with PUBLIC_PROOF_LOCK:
+  try:
+   footer=await store.footer(g)
+   snapshot=await store.snapshot_panel(g)
+   home=await store.panel(g)
+   directory=await store.boss_panel(g)
+   if not all((footer,snapshot,home,directory)):
+    return
+   ch=home["channel"]
+   roots={r["activity"]:r for r in await store.boss_boards(g)
+          if r["activity"] in RAIDS or r["activity"] in BOSSES}
+   roots.update({SNAPSHOT_CONTINUATION_KEY:snapshot,PB_FOOTER_KEY:footer})
+   pages=await store.raid_pages(g)
+   if any(row["channel"]!=ch for row in [*roots.values(),*pages,directory]):
+    return
+   tail=public_board_tail_to_reflow(roots,pages)
+   retired=await store.superseded_public_posts(g,ch)
+   if not tail and not retired:
+    return
+   channel=bot.get_channel(ch) or await bot.fetch_channel(ch)
+   directory_msg=await channel.fetch_message(directory["message"])
+   if directory_msg.author.id!=bot.user.id:
+    logging.warning("Skipped PB reordering because the directory isn't owned by Novus PB")
+    return
+   if tail:
+    logging.info("Putting PB continuation pages back in channel order starting at %s",tail[0])
+    await publish_public_board_tail(channel,g,tail,roots,pages,home)
+   boards=await store.boss_boards(g)
+   links={r["activity"]:f"https://discord.com/channels/{g}/{ch}/{r['message']}" for r in boards}
+   await directory_msg.edit(view=BossDirectory(links),allowed_mentions=discord.AllowedMentions.none())
+   for old in await store.superseded_public_posts(g,ch):
+    try:
+     await delete_public_board_post(channel,old["message"])
+     await store.forget_superseded_public_post(g,ch,old["message"])
+    except discord.HTTPException:
+     logging.exception("Could not retire superseded PB post %s",old["message"])
+   updated_roots={r["activity"]:r for r in boards if r["activity"] in roots}
+   new_footer=await store.footer(g)
+   updated_roots.update({SNAPSHOT_CONTINUATION_KEY:await store.snapshot_panel(g),PB_FOOTER_KEY:new_footer})
+   updated_pages=await store.raid_pages(g)
+   pending=await store.superseded_public_posts(g,ch)
+   valid=not public_board_tail_to_reflow(updated_roots,updated_pages) and not pending
+   tfa=updated_roots.get("The Fractured Archive")
+   tfa_pages=[r["message"] for r in updated_pages if r["activity"]=="The Fractured Archive"]
+   if valid and tfa and tfa_pages:
+    main=await channel.fetch_message(tfa["message"])
+    following=[msg async for msg in channel.history(
+     after=discord.Object(id=main.id),oldest_first=True,limit=len(tfa_pages),
+    )]
+    adjacent=[msg.id for msg in following]==tfa_pages
+    valid=valid and adjacent
+    text="\n".join(old_announcement_text(msg) for msg in [main,*following])
+    bottom=await channel.fetch_message(new_footer["message"])
+    expected_top=pb_scroll_to_top_text(f"https://discord.com/channels/{g}/{ch}/{home['message']}")
+    logging.info("Verified TFA pages beside their scales: channel=%s main=%s continuation=%s adjacent=%s proof_links=%s footer=%s footer_link_ok=%s",
+                 ch,main.id,tfa_pages,adjacent,text.count("[Proof]("),bottom.id,bottom.content==expected_top)
+   logging.info("PB continuation channel order verified=%s footer=%s pending_cleanup=%s",
+                valid,new_footer["message"],len(pending))
+  except (discord.HTTPException,aiosqlite.Error):
+   logging.exception("Unable to restore chronological PB board order")
+
+
 async def count_reachable_proof_images(urls,*,allow_video=False):
  async def probe(session,url):
   try:
@@ -1909,6 +2080,7 @@ async def refresh_live_proof_links():
      logging.exception("Unable to rotate proof links for %s",activity)
    try:
     if await refresh_proof_snapshot(guild.id) and proof_boards_ok:
+     await repair_public_board_order(guild.id)
      await restore_staff_proof_cards(guild.id)
    except aiosqlite.Error:
     logging.exception("Unable to read PB snapshot or staff cards for %s",guild.id)
@@ -2342,6 +2514,7 @@ async def refresh_panel(g,activity=None):
    )
 
  await refresh_proof_snapshot(g)
+ await repair_public_board_order(g)
 
 
 async def update_review(r):

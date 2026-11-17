@@ -285,6 +285,65 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("### 5-Man", extra_text)
         self.assertFalse(any(activity in item for item in extra_text))
 
+    def test_displaced_raid_page_reflows_only_the_following_board_tail(self):
+        raid = "The Fractured Archive"
+        roots = {
+            bot.PB_FOOTER_KEY: {"message": 150},
+            "Theatre of Blood": {"message": 120},
+            "Inferno": {"message": 90},
+            raid: {"message": 100},
+            bot.SNAPSHOT_CONTINUATION_KEY: {"message": 140},
+        }
+        page = {"activity": raid, "page": 1, "message": 900}
+        self.assertEqual(bot.public_board_tail_to_reflow(roots, [page]), [
+            raid, "Theatre of Blood", bot.SNAPSHOT_CONTINUATION_KEY, bot.PB_FOOTER_KEY,
+        ])
+        self.assertEqual(bot.public_board_tail_to_reflow(roots, [dict(page, message=110)]), [])
+
+    async def test_reflow_stages_adjacent_pages_before_switching_live_message_ids(self):
+        raid = "The Fractured Archive"
+        footer = bot.PB_FOOTER_KEY
+        roots = {raid: {"message": 100}, footer: {"message": 150}}
+        pages = [{"activity": raid, "page": 1, "message": 900}]
+        views = [bot.PBLayoutView(timeout=None), bot.PBLayoutView(timeout=None)]
+        for view, label in zip(views, ("## The Fractured Archive", "### 5-Man")):
+            view.add_item(bot.ui.TextDisplay(label))
+        messages = [SimpleNamespace(id=i, jump_url=f"https://discord.com/channels/123/456/{i}",
+                                    edit=AsyncMock(), delete=AsyncMock())
+                    for i in range(1000, 1003)]
+        switch = AsyncMock()
+        channel = SimpleNamespace(id=456, send=AsyncMock(side_effect=messages))
+        with (patch.object(bot, "public_tail_views", new=AsyncMock(return_value=[
+                  ("Solo", views[0]), ("5-Man", views[1]),
+              ])),
+              patch.object(bot.store, "switch_public_board_tail", new=switch)):
+            out = await bot.publish_public_board_tail(
+                channel, 123, [raid, footer], roots, pages, {"channel": 456, "message": 2},
+            )
+        self.assertEqual(out, {raid: [1000, 1001], footer: [1002]})
+        self.assertEqual(channel.send.await_args_list[2].args[0],
+                         bot.pb_scroll_to_top_text("https://discord.com/channels/123/456/2"))
+        switch.assert_awaited_once_with(123, 456, out, {100, 150, 900})
+        self.assertTrue(all(msg.delete.await_count == 0 for msg in messages))
+
+    async def test_reflow_does_not_replace_live_ids_when_staging_fails(self):
+        raid = "The Fractured Archive"
+        view = bot.PBLayoutView(timeout=None)
+        view.add_item(bot.ui.TextDisplay("### 5-Man"))
+        staged = SimpleNamespace(id=1000, delete=AsyncMock())
+        channel = SimpleNamespace(id=456, send=AsyncMock(side_effect=[staged, RuntimeError("send failed")]))
+        with (patch.object(bot, "public_tail_views", new=AsyncMock(return_value=[
+                 ("Solo", view), ("5-Man", view),
+             ])),
+              patch.object(bot.store, "switch_public_board_tail", new=AsyncMock()) as switch):
+            with self.assertRaisesRegex(RuntimeError, "send failed"):
+                await bot.publish_public_board_tail(
+                    channel, 123, [raid], {raid: {"message": 100}}, [],
+                    {"channel": 456, "message": 2},
+                )
+        switch.assert_not_awaited()
+        staged.delete.assert_awaited_once()
+
     async def test_snapshot_overflow_keeps_blue_links_on_every_entry(self):
         proof = "https://example.com/" + "a" * 950
         leaders = {
