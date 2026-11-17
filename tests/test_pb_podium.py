@@ -81,7 +81,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
     def test_novus_trophy_ids_override_stale_emoji_cache(self):
         guild = bot.NOVUS_GUILD_ID
         expected = (
-            "<:novuspb1:1572156661827641374>",
+            "<:novuspb1:1572157972702953563>",
             "<:novuspb2:1572155458423361637>",
             "<:novuspb3:1572155471606054982>",
         )
@@ -124,6 +124,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         older = "## <:novuspb1:1> NEW NOVUS #1\n## <:novuspb2:2> other"
         new = f"## {EMOJIS['novuspb1']} NEW NOVUS #1\n## <:novuspb2:2> other"
         self.assertEqual(bot.replace_first_trophy_heading(older, EMOJIS["novuspb1"]), new)
+        self.assertEqual(bot.replace_first_trophy_heading(older.replace("<:novuspb1:1>", ":novuspb1:"), EMOJIS["novuspb1"]), new)
         self.assertEqual(bot.replace_first_trophy_heading(new, EMOJIS["novuspb1"]), new)
 
     async def test_existing_announcement_edit_keeps_proof_and_controls(self):
