@@ -1142,8 +1142,6 @@ class SnapshotPanel(PBLayoutView):
     if idx!=len(recent)-1:
      recent_panel.add_item(ui.Separator())
 
-  if omit:
-   recent_panel.add_item(ui.TextDisplay("-# For compact entries, use /pbviewproof with the PB number."))
   self.add_item(records)
   self.add_item(recent_panel)
 
