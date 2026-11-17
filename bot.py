@@ -898,10 +898,18 @@ async def on_ready():
     ranks=[entry["rank"] for entry in points]
     matches_ranked_rows=body==PB_TOP10_TITLE+"\n"+"\n".join(view.standing_parts)
     live_parts=list(ui.LayoutView.from_message(confirmed).walk_children())
-    podium_uploaded=any(a.filename==PODIUM_FILENAME for a in confirmed.attachments)
-    podium_embedded=any(isinstance(item,ui.MediaGallery) and any(
-     tile.description==view.podium_description for tile in item.items if tile.description
-    ) for item in live_parts)
+    # Discord may return gallery uploads only as component media, not in
+    # message.attachments. Verify against that media rather than the file list.
+    podium_media=next((tile.media for item in live_parts if isinstance(item,ui.MediaGallery)
+                       for tile in item.items if tile.description and tile.description==view.podium_description),None)
+    podium_embedded=podium_media is not None
+    podium_uploaded=False
+    if podium_media is not None:
+     try:
+      downloaded=await asyncio.wait_for(podium_media.read(),timeout=8)
+      podium_uploaded=downloaded==view.podium_png
+     except (discord.DiscordException,aiohttp.ClientError,TimeoutError):
+      logging.warning("Unable to read the published PB podium image",exc_info=True)
     dividers=sum(isinstance(item,ui.Separator) for item in live_parts)
     podium_divider=dividers==3
     logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s podium divider=%s",
