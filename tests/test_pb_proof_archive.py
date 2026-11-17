@@ -279,7 +279,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         track.assert_awaited_once_with(123, activity, 1, 456, 11)
         main_text = [item.content for item in main.edit.await_args.kwargs["view"].walk_children()
                      if isinstance(item, bot.ui.TextDisplay)]
-        self.assertIn(f"### [5-Man ↓]({extra.jump_url})", main_text)
+        self.assertFalse(any("[5-Man ↓](" in line for line in main_text))
         extra_text = [item.content for item in extra.edit.await_args.kwargs["view"].walk_children()
                       if isinstance(item, bot.ui.TextDisplay)]
         self.assertIn("### 5-Man", extra_text)
