@@ -1012,6 +1012,11 @@ async def on_ready():
      logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s recent_card=%s recent_jump_link=%s",
                   message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)),
                   "### RECENT PBs" in snapshot_lines,"[Recent PBs ↓](" in snapshot_text)
+     recent_titles=[recent_pb_title(row["activity"],row["variant"])
+                    for row in await store.recent_approved(guild.id,3)]
+     logging.info("Verified clean Recent PB titles on snapshot %s: %s/%s titles=%s",
+                  message.id,sum(f"**{title}**" in snapshot_lines for title in recent_titles),
+                  len(recent_titles),recent_titles)
      expected_rows=[(snapshot_result_line(row).split(" · [Proof](",1)[0],snapshot_team_line(row))
                     for rows in snapshot_rows for row in rows]
      roster_matches=sum(any(
@@ -1210,6 +1215,13 @@ def snapshot_team_line(r):
  return f"-# {members}" if members else ""
 
 
+def recent_pb_title(activity,variant):
+ title=RAID_LABELS.get(activity,activity)
+ dt2_mode=variant in ("Normal","Awakened") and variant in BOSSES.get(activity,())
+ raid_mode=variant in RAIDS.get(activity,()) and variant not in REGULAR_RAID_SIZES
+ return " · ".join(map(clean,(title,variant))) if dt2_mode or raid_mode else clean(title)
+
+
 class SnapshotPanel(PBLayoutView):
  def __init__(self,raid_leaders=None,recent=None,*,omit=(),activities=None,show_title=True,include_recent=True):
   super().__init__(timeout=None)
@@ -1243,9 +1255,8 @@ class SnapshotPanel(PBLayoutView):
    ))
   else:
    for idx,r in enumerate(recent):
-    activity=RAID_LABELS.get(r["activity"],r["activity"])
     recent_text=(
-     f"**{clean(activity)} · {clean(r['variant'])}**\n"
+     f"**{recent_pb_title(r['activity'],r['variant'])}**\n"
      f"**{fmt(r['ms'])}**\n"
      f"{players_with_proof(r,omit=omit)}"
      + (f" · PB #{r['id']}" if r["id"] in omit else "")
