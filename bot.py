@@ -396,6 +396,7 @@ class Store:
   CREATE INDEX IF NOT EXISTS pb_rank ON submissions(guild,category,activity,variant,status,ms);
   CREATE TABLE IF NOT EXISTS panels(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS panel_banners(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
+  CREATE TABLE IF NOT EXISTS one_time_pb_migrations(name TEXT PRIMARY KEY,applied TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS panel_bosses(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS boss_board_messages(guild INTEGER NOT NULL,activity TEXT NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity));
   CREATE TABLE IF NOT EXISTS raid_board_pages(guild INTEGER NOT NULL,activity TEXT NOT NULL,page INTEGER NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity,page));
@@ -843,6 +844,7 @@ async def on_ready():
  if not getattr(bot,"_first_no_gallery_retrofit_started",False):
   bot._first_no_gallery_retrofit_started=True
   start_logged_task(remove_existing_first_announcement_galleries(),name="pb-announcement-gallery-cleanup")
+ start_logged_task(tighten_existing_hydra_announcement(),name="pb-announcement-hydra-spacing")
  # Retrieve actual emoji IDs, then update existing leaderboard messages in place.
  for guild in bot.guilds:
   cached=await fetch_activity_emojis(guild)
@@ -2853,6 +2855,15 @@ def first_place_announcement(r, previous_leader, leaderboard_url=None):
 
 
 
+def first_announcement_details(record):
+ return (
+  "-# PB TIME\n"
+  f"**{fmt(record['ms'])}**\n\n"
+  "-# PB DATE\n"
+  f"**{clean(record['pb_date'] or 'Not recorded')}**"
+ )
+
+
 class FirstPlaceAnnouncementCard(PBLayoutView):
  """Public #1 milestone, styled after the staff review card."""
  def __init__(self,record,previous_leader=None,leaderboard_url=None):
@@ -2875,10 +2886,7 @@ class FirstPlaceAnnouncementCard(PBLayoutView):
   ))
   panel.add_item(ui.Separator())
   panel.add_item(ui.TextDisplay(
-   "-# PB TIME\n"
-   f"## {fmt(record['ms'])}\n"
-   "-# PB DATE\n"
-   f"**{clean(record['pb_date'] or 'Not recorded')}**"
+   first_announcement_details(record)
   ))
 
   if previous_leader is None:
@@ -3010,10 +3018,13 @@ async def refresh_first_announcement_trophy_icons(guild_id):
 
 def announcement_time_matches(text,ms):
  time=fmt(ms)
- headings={f"## {time}"}
+ values={time}
  if ms<60000:
-  headings.add(f"## 0:{time}")
- return any(line.rstrip() in headings for line in text.splitlines())
+  values.add(f"0:{time}")
+ lines=[line.rstrip() for line in text.splitlines()]
+ pairs=set(zip(lines,lines[1:]))
+ return any(f"## {value}" in lines or ("-# PB TIME",f"**{value}**") in pairs
+            for value in values)
 
 
 def match_legacy_first_post(message,approved):
@@ -3237,6 +3248,56 @@ async def remove_existing_first_announcement_galleries():
     )
  except Exception:
   logging.exception("Unexpected error removing proof galleries from existing #1 posts")
+
+
+async def tighten_existing_hydra_announcement():
+ """Update only the Hydra #1 shown in the spacing request."""
+ op="compact_hydra_announcement_pb116"
+ if not GENERAL_CHAT_ID or not bot.user:
+  return
+ try:
+  if await store.one("SELECT name FROM one_time_pb_migrations WHERE name=?",(op,)):
+   return
+  record=await store.one(
+   """SELECT * FROM submissions WHERE guild=? AND id=? AND status='approved'
+      AND activity='Alchemical Hydra' AND ms=73200 AND pb_date='2026-11-17'""",
+   (NOVUS_GUILD_ID,116),
+  )
+  if not record:
+   return
+  channel=bot.get_channel(GENERAL_CHAT_ID) or await bot.fetch_channel(GENERAL_CHAT_ID)
+  if getattr(getattr(channel,"guild",None),"id",None)!=NOVUS_GUILD_ID:
+   return
+  # The bot's post log locates the screenshot's own announcement at 12:30 UTC.
+  after=datetime(2026,11,17,12,29,tzinfo=timezone.utc)
+  before=datetime(2026,11,17,12,33,tzinfo=timezone.utc)
+  matches=[message async for message in channel.history(limit=50,after=after,before=before)
+           if message.author.id==bot.user.id and matches_first_announcement(message,record)]
+  if len(matches)!=1:
+   logging.warning("Skipped Hydra announcement spacing update: matched messages=%s",len(matches))
+   return
+  message=matches[0]
+  compact=first_announcement_details(record)
+  if compact not in old_announcement_text(message):
+   legacy=compact.replace(f"**{fmt(record['ms'])}**\n\n",f"## {fmt(record['ms'])}\n",1)
+   view=ui.LayoutView.from_message(message,timeout=None)
+   displays=[item for item in view.walk_children()
+             if isinstance(item,ui.TextDisplay) and item.content==legacy]
+   if len(displays)!=1:
+    logging.warning("Skipped Hydra announcement spacing update: time field didn't match")
+    return
+   displays[0].content=compact
+   await message.edit(view=view,allowed_mentions=discord.AllowedMentions.none())
+   message=await channel.fetch_message(message.id)
+  if compact not in old_announcement_text(message):
+   logging.warning("Could not verify Hydra announcement spacing after edit")
+   return
+  async with store.lock:
+   await store.conn.execute("INSERT OR IGNORE INTO one_time_pb_migrations VALUES(?,?)",(op,now()))
+   await store.conn.commit()
+  logging.info("Verified compact PB time and date on Hydra announcement message=%s",message.id)
+ except (discord.HTTPException,aiosqlite.Error):
+  logging.exception("Unable to tighten existing Hydra announcement spacing")
 
 
 async def announce_first_place(r, previous_leader):
