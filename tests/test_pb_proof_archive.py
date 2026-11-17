@@ -238,12 +238,73 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
             for n, variant in enumerate(bot.RAIDS[activity])
         ]
         with patch.dict(bot.PUBLIC_PROOF_URLS, {ref: url}, clear=True):
-            view = bot.linked_board_view(bot.RaidLeaderboard, activity, blocks)
-        text = "\n".join(item.content for item in view.walk_children() if isinstance(item, bot.ui.TextDisplay))
-        self.assertLessEqual(len(text.encode("utf-16-le")) // 2, 4050)
+            pages = bot.raid_board_page_plan(activity, blocks)
+        self.assertGreater(len(pages), 1)
+        for index, (label, view) in enumerate(pages):
+            if index + 1 < len(pages):
+                view.add_item(bot.raid_page_link(pages[index + 1][0],
+                                                "https://discord.com/channels/123/456/789"))
+            self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
+            self.assertLessEqual(len(list(view.walk_children())), 40)
+        text = "\n".join(item.content for _, view in pages for item in view.walk_children()
+                         if isinstance(item, bot.ui.TextDisplay))
         self.assertEqual(text.count("0:05.00"), len(blocks))
-        self.assertGreaterEqual(text.count(f"[Proof]({url})"), len(blocks))
+        self.assertEqual(text.count(f"[Proof]({url})"), len(blocks) * 5)
+        self.assertEqual(text.count(f"## {activity}"), 1)
+        self.assertNotIn(" · PB #", text)
         self.assertNotIn("Empty", text)
+
+    async def test_raid_pages_keep_main_jump_target_and_reuse_existing_continuation(self):
+        activity = "The Fractured Archive"
+        blocks = [
+            (scale, [record(id=n + 1, activity=activity, variant=scale,
+                            proof="https://example.com/" + "a" * 1650)])
+            for n, scale in enumerate(("Duo", "Trio", "5-Man"))
+        ]
+        main = SimpleNamespace(id=10, jump_url="https://discord.com/channels/123/456/10")
+        main.edit = AsyncMock(return_value=main)
+        extra = SimpleNamespace(id=11, jump_url="https://discord.com/channels/123/456/11")
+        extra.edit = AsyncMock(return_value=extra)
+        channel = SimpleNamespace(id=456, send=AsyncMock(return_value=extra),
+                                  fetch_message=AsyncMock(return_value=extra))
+        known = {"page": 1, "channel": 456, "message": 11}
+        with (patch.object(bot.store, "raid_pages", new=AsyncMock(side_effect=[[], [known]])),
+              patch.object(bot.store, "set_raid_page", new=AsyncMock()) as track):
+            first = await bot.publish_raid_board_pages(channel, 123, activity, main, blocks, None)
+            second = await bot.publish_raid_board_pages(channel, 123, activity, main, blocks, None)
+        self.assertEqual(first, [main, extra])
+        self.assertEqual(second, first)
+        channel.send.assert_awaited_once()
+        channel.fetch_message.assert_awaited_once_with(11)
+        track.assert_awaited_once_with(123, activity, 1, 456, 11)
+        main_text = [item.content for item in main.edit.await_args.kwargs["view"].walk_children()
+                     if isinstance(item, bot.ui.TextDisplay)]
+        self.assertIn(f"### [5-Man ↓]({extra.jump_url})", main_text)
+        extra_text = [item.content for item in extra.edit.await_args.kwargs["view"].walk_children()
+                      if isinstance(item, bot.ui.TextDisplay)]
+        self.assertIn("### 5-Man", extra_text)
+        self.assertFalse(any(activity in item for item in extra_text))
+
+    async def test_snapshot_overflow_keeps_blue_links_on_every_entry(self):
+        proof = "https://example.com/" + "a" * 950
+        leaders = {
+            activity: [record(id=n * 4 + k, activity=activity, proof=proof)
+                       for k in range(1, 4)]
+            for n, activity in enumerate(bot.RAIDS)
+        }
+        recent = [record(id=20 + k, proof=proof) for k in range(3)]
+        pages = bot.snapshot_page_plan(leaders, recent)
+        self.assertGreater(len(pages), 1)
+        for i, (_, view) in enumerate(pages):
+            if i + 1 < len(pages):
+                view.add_item(bot.raid_page_link(pages[i + 1][0],
+                                               "https://discord.com/channels/123/456/789"))
+            self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
+        text = "\n".join(item.content for _, view in pages for item in view.walk_children()
+                         if isinstance(item, bot.ui.TextDisplay))
+        self.assertEqual(text.count(f"[Proof]({proof})"), 15)
+        self.assertEqual(text.count("### RAID SNAPSHOT"), 1)
+        self.assertNotIn(" · PB #", text)
 
     async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
         ref = "archive:" + "c" * 32 + ".png"

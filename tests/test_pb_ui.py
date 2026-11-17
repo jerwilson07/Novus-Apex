@@ -284,6 +284,42 @@ class PBLayoutTests(unittest.TestCase):
                 self.assertIn(f"# {bot.activity_icon(raid)}{raid}", text.splitlines())
         self.assertIn("-# Be the first to claim this record!", text)
 
+    def test_public_proof_links_prefer_first_place_and_keep_shorter_links_that_fit(self):
+        activity = "The Fractured Archive"
+        champion = record(id=11, proof="https://example.com/" + "a" * 2350)
+        small = record(id=12, proof="https://example.com/short")
+        overflow = record(id=13, proof="https://example.com/" + "b" * 1800)
+        snapshot = bot.fit_snapshot_panel({activity: [champion, small, overflow]}, [])
+        raid = bot.linked_board_view(bot.RaidLeaderboard, activity,
+                                    [("Trio", [champion, small, overflow])])
+        for view in (snapshot, raid):
+            with self.subTest(view=type(view).__name__):
+                self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
+                text = "\n".join(item.content for item in view.walk_children()
+                                 if isinstance(item, bot.ui.TextDisplay))
+                self.assertIn(f"[Proof]({champion['proof']})", text)
+                self.assertIn(f"[Proof]({small['proof']})", text)
+                self.assertIn(" · PB #13", text)
+                self.assertNotIn(overflow["proof"], text)
+                self.assertNotIn(" · PB #12", text)
+
+    def test_budget_keeps_more_links_of_equal_priority_and_counts_repeated_pbs(self):
+        first = "The Fractured Archive"
+        second = "Theatre of Blood"
+        third = "Chambers of Xeric"
+        long_one = record(id=21, proof="https://example.com/" + "a" * 3000)
+        medium_one = record(id=22, proof="https://example.com/" + "b" * 900)
+        next_one = record(id=23, proof="https://example.com/" + "c" * 900)
+        snapshot = bot.fit_snapshot_panel(
+            {first: [long_one], second: [medium_one], third: [next_one]}, [medium_one]
+        )
+        text = "\n".join(item.content for item in snapshot.walk_children()
+                         if isinstance(item, bot.ui.TextDisplay))
+        self.assertLessEqual(bot.pb_view_text_units(snapshot), bot.PB_PUBLIC_TEXT_LIMIT)
+        self.assertEqual(text.count(f"[Proof]({medium_one['proof']})"), 2)
+        self.assertIn(f"[Proof]({next_one['proof']})", text)
+        self.assertIn(" · PB #21", text)
+
     def test_board_titles_keep_variant_without_redundant_top_five(self):
         record_one = record()
         boards = [
