@@ -197,7 +197,7 @@ def short_record(r,rank,include_variant=False,*,omit=()):
   players+=f" · PB #{r['id']}"
  lines.append(players)
  if rank==0:
-  lines.append(f"-# Achieved {pb_date_label(r['pb_date'])}")
+  lines.append(f"-# ✅ {pb_date_label(r['pb_date'])}")
  return "\n".join(lines)
 
 def discord_updated(timestamp):
@@ -940,6 +940,10 @@ async def on_ready():
      runner_ups=count_runner_up_trophies(message,guild.id)
      logging.info("Verified raid snapshot custom trophies and green badges: %s/%s; runner-up trophies=%s expected=%s",
                   badges,expected[0],runner_ups,expected[1:])
+     snapshot_text=old_announcement_text(message)
+     logging.info("Verified PB date styling on raid snapshot %s: green_check_dates=%s compact_note_present=%s",
+                  message.id,sum(line.startswith("-# ✅ ") for line in snapshot_text.splitlines()),
+                  "For compact entries" in snapshot_text)
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
@@ -1136,7 +1140,7 @@ class SnapshotPanel(PBLayoutView):
      f"**{fmt(r['ms'])}**\n"
      f"{players_with_proof(r,omit=omit)}"
      + (f" · PB #{r['id']}" if r["id"] in omit else "")
-     + f"\n-# Achieved {pb_date_label(r['pb_date'])}"
+     + f"\n-# ✅ {pb_date_label(r['pb_date'])}"
     )
     recent_panel.add_item(ui.TextDisplay(recent_text))
     if idx!=len(recent)-1:
@@ -1261,7 +1265,7 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), heading=""):
  champion_text=(
   f"{heading}{PB_FEATURED_HEADING}{champion_icon} {fmt(champion['ms'])}\n"
   f"{players_with_proof(champion,omit=omit)}\n"
-  f"-# Achieved {pb_date_label(champion['pb_date'])}"
+  f"-# ✅ {pb_date_label(champion['pb_date'])}"
  )
  panel.add_item(first_place_section(champion,champion_text))
 
