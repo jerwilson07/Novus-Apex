@@ -275,13 +275,13 @@ class PBLayoutTests(unittest.TestCase):
         self.assertTrue(section.accessory.disabled)
         self.assertEqual(section.accessory.style, bot.discord.ButtonStyle.success)
 
-    def test_snapshot_uses_level_two_heading_for_each_raid_name(self):
+    def test_snapshot_uses_level_three_heading_for_each_raid_name(self):
         snapshot = bot.SnapshotPanel({"Chambers of Xeric": [record()]})
         text = "\n".join(item.content for item in snapshot.children[0].walk_children()
                          if isinstance(item, bot.ui.TextDisplay))
         for raid in bot.RAIDS:
             with self.subTest(raid=raid):
-                self.assertIn(f"## {bot.activity_icon(raid)}{raid}", text.splitlines())
+                self.assertIn(f"### {bot.activity_icon(raid)}{raid}", text.splitlines())
         self.assertIn("-# Be the first to claim this record!", text)
 
     def test_snapshot_lists_one_winner_per_scale_with_team_and_proof(self):
