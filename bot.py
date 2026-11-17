@@ -972,7 +972,7 @@ async def on_ready():
      logging.info("Verified PB date styling on raid snapshot %s: heavy_check_dates=%s compact_note_present=%s",
                   message.id,sum(line.startswith("-# ✔️ ") for line in snapshot_lines),
                   "For compact entries" in snapshot_text)
-     logging.info("Verified enlarged raid name headings on snapshot %s: %s/%s",
+     logging.info("Verified level-2 raid name headings on snapshot %s: %s/%s",
                   message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
      logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s",
                   message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)))
@@ -1132,7 +1132,7 @@ class Home(PBLayoutView):
 
 
 def snapshot_raid_heading(activity):
- return f"# {activity_icon(activity)}{clean(activity)}"
+ return f"## {activity_icon(activity)}{clean(activity)}"
 
 
 class SnapshotPanel(PBLayoutView):
