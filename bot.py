@@ -254,6 +254,11 @@ ACTIVITY_EMOJIS={
 
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
+NOVUS_PB_TROPHY_IDS={
+ 1:1572156661827641374,
+ 2:1572155458423361637,
+ 3:1572155471606054982,
+}
 PB_FEATURED_HEADING="# "
 PB_TOP10_TITLE="## ✦ NOVUS TOP 10"
 PB_TOP10_PODIUM_HEADING="### "
@@ -264,6 +269,8 @@ def podium_icon(rank,guild_id):
  if rank not in PB_PODIUM_FALLBACK:
   return f"**{rank}.**"
  name=f"novuspb{rank}"
+ if guild_id==NOVUS_GUILD_ID:
+  return f"<:{name}:{NOVUS_PB_TROPHY_IDS[rank]}>"
  return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
 
 def card_rank_icon(rank,guild_id):
@@ -784,7 +791,12 @@ async def on_ready():
   start_logged_task(remove_existing_first_announcement_galleries(),name="pb-announcement-gallery-cleanup")
  # Retrieve actual emoji IDs, then update existing leaderboard messages in place.
  for guild in bot.guilds:
-  await fetch_activity_emojis(guild)
+  cached=await fetch_activity_emojis(guild)
+  if guild.id==NOVUS_GUILD_ID:
+   matched=[n for n in NOVUS_PB_TROPHY_IDS if cached.get(f"novuspb{n}")==podium_icon(n,guild.id)]
+   logging.info("Pinned Novus PB trophy IDs: %s; matched server emoji ranks=%s",NOVUS_PB_TROPHY_IDS,matched)
+   if len(matched)!=len(NOVUS_PB_TROPHY_IDS):
+    logging.warning("Could not match all pinned Novus PB trophy IDs in the fetched guild emojis")
   loaded=[n for n in range(1,4) if podium_icon(n,guild.id)!=PB_PODIUM_FALLBACK[n]]
   logging.info("Resolved Novus PB podium emojis for guild %s: %s",guild.id,loaded)
   if 1 in loaded and (guild.id==NOVUS_GUILD_ID or guild.id==GUILD_ID):
@@ -2503,7 +2515,7 @@ def old_announcement_text(message):
  return "\n".join(chunks)
 
 
-FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1)(?= NEW NOVUS #1[ \t]*$)")
+FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1|<a?:novuspb1:[0-9]+>)(?= NEW NOVUS #1[ \t]*$)")
 
 
 def replace_first_trophy_heading(content,icon):
@@ -2515,7 +2527,7 @@ async def refresh_first_announcement_trophy_icons(guild_id):
  icon=podium_icon(1,guild_id)
  if not GENERAL_CHAT_ID or not bot.user or icon==PB_PODIUM_FALLBACK[1]:
   return
- op=f"first_announcements_novuspb1_v2_{guild_id}_{icon}"
+ op=f"first_announcements_novuspb1_v3_{guild_id}_{icon}"
  try:
   channel=bot.get_channel(GENERAL_CHAT_ID) or await bot.fetch_channel(GENERAL_CHAT_ID)
   if getattr(getattr(channel,"guild",None),"id",None)!=guild_id:
@@ -2533,15 +2545,16 @@ async def refresh_first_announcement_trophy_icons(guild_id):
    if message.author.id!=bot.user.id:
     continue
    try:
-    if FIRST_TROPHY_HEADING.search(old_announcement_text(message)):
+    old_view_text=old_announcement_text(message)
+    if replace_first_trophy_heading(old_view_text,icon)!=old_view_text:
      view=ui.LayoutView.from_message(message,timeout=None)
      for item in view.walk_children():
       if isinstance(item,ui.TextDisplay):
        item.content=replace_first_trophy_heading(item.content,icon)
      saved=await message.edit(view=view,allowed_mentions=discord.AllowedMentions.none())
      verified=icon in old_announcement_text(saved)
-    elif FIRST_TROPHY_HEADING.search(message.content):
-     saved=await message.edit(content=replace_first_trophy_heading(message.content,icon),
+    elif (updated:=replace_first_trophy_heading(message.content,icon))!=message.content:
+     saved=await message.edit(content=updated,
                               allowed_mentions=discord.AllowedMentions.none())
      verified=icon in saved.content
     else:
