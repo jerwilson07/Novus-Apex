@@ -317,6 +317,26 @@ class PBLayoutTests(unittest.TestCase):
         self.assertFalse(any(isinstance(item, bot.ui.Button) for item in view.walk_children()))
         self.assertFalse(any("✔️" in line for line in lines))
 
+    def test_recent_pb_titles_only_show_special_raid_variants_and_dt2_modes(self):
+        cases = (
+            ("Grotesque Guardians", "Standard", "Grotesque Guardians"),
+            ("Vorkath", "Standard", "Vorkath"),
+            ("The Fractured Archive", "Trio", "TFA"),
+            ("Vardorvis", "Normal", "Vardorvis · Normal"),
+            ("The Whisperer", "Awakened", "The Whisperer · Awakened"),
+            ("Chambers of Xeric", "Challenge Mode · Trio", "CoX · Challenge Mode · Trio"),
+            ("Theatre of Blood", "Hard Mode · 5-Man", "ToB · Hard Mode · 5-Man"),
+            ("Tombs of Amascut", "Expert · Solo", "ToA · Expert · Solo"),
+        )
+        for activity, variant, expected in cases:
+            with self.subTest(activity=activity, variant=variant):
+                view = bot.SnapshotPanel(recent=[record(activity=activity, variant=variant)])
+                lines = [line for item in view.children[-1].walk_children()
+                         if isinstance(item, bot.ui.TextDisplay)
+                         for line in item.content.splitlines()]
+                self.assertIn(f"**{expected}**", lines)
+                self.assertTrue(any("[Proof](" in line for line in lines))
+
     def test_public_proof_links_prefer_first_place_and_keep_shorter_links_that_fit(self):
         activity = "The Fractured Archive"
         champion = record(id=11, proof="https://example.com/" + "a" * 2350)
