@@ -255,10 +255,11 @@ ACTIVITY_EMOJIS={
 ACTIVITY_EMOJI_CACHE={}
 PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
 NOVUS_PB_TROPHY_IDS={
- 1:1572157972702953563,
- 2:1572155458423361637,
- 3:1572155471606054982,
+ 1:1572259759548272752,
+ 2:1572259827885940928,
+ 3:1572260053191491634,
 }
+PB_PODIUM_NAMES={rank:f"pb{rank}" for rank in PB_PODIUM_FALLBACK}
 PB_FEATURED_HEADING="## "
 PB_TOP10_TITLE="## ✦ NOVUS TOP 10"
 PB_TOP10_PODIUM_HEADING="### "
@@ -268,7 +269,7 @@ PB_PLACEMENT_POINTS=(5,3,1)
 def podium_icon(rank,guild_id):
  if rank not in PB_PODIUM_FALLBACK:
   return f"**{rank}.**"
- name=f"novuspb{rank}"
+ name=PB_PODIUM_NAMES[rank]
  if guild_id==NOVUS_GUILD_ID:
   return f"<:{name}:{NOVUS_PB_TROPHY_IDS[rank]}>"
  return ACTIVITY_EMOJI_CACHE.get(guild_id,{}).get(name) or PB_PODIUM_FALLBACK[rank]
@@ -849,14 +850,14 @@ async def on_ready():
  for guild in bot.guilds:
   cached=await fetch_activity_emojis(guild)
   if guild.id==NOVUS_GUILD_ID:
-   matched=[n for n in NOVUS_PB_TROPHY_IDS if cached.get(f"novuspb{n}")==podium_icon(n,guild.id)]
+   matched=[n for n in NOVUS_PB_TROPHY_IDS if cached.get(PB_PODIUM_NAMES[n])==podium_icon(n,guild.id)]
    logging.info("Pinned Novus PB trophy IDs: %s; matched server emoji ranks=%s",NOVUS_PB_TROPHY_IDS,matched)
    if len(matched)!=len(NOVUS_PB_TROPHY_IDS):
     logging.warning("Could not match all pinned Novus PB trophy IDs in the fetched guild emojis")
   loaded=[n for n in range(1,4) if podium_icon(n,guild.id)!=PB_PODIUM_FALLBACK[n]]
   logging.info("Resolved Novus PB podium emojis for guild %s: %s",guild.id,loaded)
   if 1 in loaded and (guild.id==NOVUS_GUILD_ID or guild.id==GUILD_ID):
-   start_logged_task(refresh_first_announcement_trophy_icons(guild.id),name="pb-announcement-trophies")
+   start_logged_task(refresh_public_post_trophy_icons(guild.id),name="pb-public-post-trophies")
   await resolve_royal_titans_35_partner(guild)
   if guild.id==NOVUS_GUILD_ID:
    start_logged_task(refresh_royal_titans_35_review_once(),name="pb-royal-titans-review")
@@ -2962,19 +2963,22 @@ def old_announcement_text(message):
  return "\n".join(chunks)
 
 
-FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1|:novuspb1:|<a?:novuspb1:[0-9]+>)(?= NEW NOVUS #1[ \t]*$)")
+FIRST_TROPHY_HEADING=re.compile(r"(?m)^(## )(?:🏆|#1)(?= NEW NOVUS #1[ \t]*$)")
+LEGACY_PB_TROPHY=re.compile(r"<a?:novuspb([123]):[0-9]+>|:novuspb([123]):")
 
 
-def replace_first_trophy_heading(content,icon):
- return FIRST_TROPHY_HEADING.sub(lambda match:match.group(1)+icon,content)
+def replace_legacy_pb_trophies(content,icons):
+ """Replace retired trophy codes and the fallback in old #1 headings."""
+ content=LEGACY_PB_TROPHY.sub(lambda match:icons[int(match[1] or match[2])],content)
+ return FIRST_TROPHY_HEADING.sub(lambda match:match[1]+icons[1],content)
 
 
-async def refresh_first_announcement_trophy_icons(guild_id):
- """Replace only the old trophy in bot-authored #1 posts, without reposting."""
- icon=podium_icon(1,guild_id)
- if not GENERAL_CHAT_ID or not bot.user or icon==PB_PODIUM_FALLBACK[1]:
+async def refresh_public_post_trophy_icons(guild_id):
+ """Replace trophies in bot-authored #1 posts and Top 10 copies in general chat."""
+ icons={rank:podium_icon(rank,guild_id) for rank in PB_PODIUM_NAMES}
+ if not GENERAL_CHAT_ID or not bot.user or any(icons[r]==PB_PODIUM_FALLBACK[r] for r in icons):
   return
- op=f"first_announcements_novuspb1_v3_{guild_id}_{icon}"
+ op=f"public_post_pb_trophies_{guild_id}_"+"_".join(icons.values())
  try:
   channel=bot.get_channel(GENERAL_CHAT_ID) or await bot.fetch_channel(GENERAL_CHAT_ID)
   if getattr(getattr(channel,"guild",None),"id",None)!=guild_id:
@@ -2993,17 +2997,18 @@ async def refresh_first_announcement_trophy_icons(guild_id):
     continue
    try:
     old_view_text=old_announcement_text(message)
-    if replace_first_trophy_heading(old_view_text,icon)!=old_view_text:
+    expected=replace_legacy_pb_trophies(old_view_text,icons)
+    if expected!=old_view_text:
      view=ui.LayoutView.from_message(message,timeout=None)
      for item in view.walk_children():
       if isinstance(item,ui.TextDisplay):
-       item.content=replace_first_trophy_heading(item.content,icon)
+       item.content=replace_legacy_pb_trophies(item.content,icons)
      saved=await message.edit(view=view,allowed_mentions=discord.AllowedMentions.none())
-     verified=icon in old_announcement_text(saved)
-    elif (updated:=replace_first_trophy_heading(message.content,icon))!=message.content:
+     verified=old_announcement_text(saved)==expected
+    elif (updated:=replace_legacy_pb_trophies(message.content,icons))!=message.content:
      saved=await message.edit(content=updated,
                               allowed_mentions=discord.AllowedMentions.none())
-     verified=icon in saved.content
+     verified=saved.content==updated
     else:
      continue
     if verified:
@@ -3013,14 +3018,14 @@ async def refresh_first_announcement_trophy_icons(guild_id):
     await asyncio.sleep(1.4)
    except (discord.HTTPException,ValueError):
     failed+=1
-    logging.exception("Could not edit trophy on #1 announcement %s",message.id)
+    logging.exception("Could not edit PB trophies on public post %s",message.id)
   if not failed:
    async with store.lock:
     await store.conn.execute("INSERT OR IGNORE INTO one_time_pb_migrations(name,applied) VALUES(?,?)",(op,now()))
     await store.conn.commit()
-  logging.info("Novus #1 announcement trophy refresh complete: changed=%s failed=%s",changed,failed)
+  logging.info("Historical public PB trophy refresh complete: changed=%s failed=%s",changed,failed)
  except (discord.HTTPException,aiosqlite.Error):
-  logging.exception("Could not refresh existing #1 announcement trophy icons")
+  logging.exception("Could not refresh historical public PB trophies")
 
 
 def announcement_time_matches(text,ms):

@@ -7,7 +7,7 @@ from discord.components import _component_factory
 from test_pb_ui import record
 
 
-EMOJIS = {f"novuspb{i}": f"<:novuspb{i}:{123456789123456780+i}>" for i in range(1, 4)}
+EMOJIS = {f"pb{i}": f"<:pb{i}:{123456789123456780+i}>" for i in range(1, 4)}
 
 
 class PodiumTests(unittest.IsolatedAsyncioTestCase):
@@ -24,33 +24,33 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         standings = "\n".join(item.content for item in components
                               if isinstance(item, bot.ui.TextDisplay))
         for rank in range(1, 4):
-            self.assertIn(f"### {EMOJIS[f'novuspb{rank}']} <@{rank}>", standings)
+            self.assertIn(f"### {EMOJIS[f'pb{rank}']} <@{rank}>", standings)
         for rank in range(4, 11):
             self.assertIn(f"**{rank}.** <@{rank}>", standings)
-        counts = f"*{EMOJIS['novuspb1']} × 1 · {EMOJIS['novuspb2']} × 0 · {EMOJIS['novuspb3']} × 0*"
+        counts = f"*{EMOJIS['pb1']} × 1 · {EMOJIS['pb2']} × 0 · {EMOJIS['pb3']} × 0*"
         insets = ["\u200b\u2003\u2003\u2002"] * 3 + ["\u200b\u2003\u2002\u2005"] * 6 + ["\u200b\u2003\u2003\u2005"]
         self.assertEqual(
             [line for line in standings.splitlines() if line.endswith(counts)],
             [f"-# {inset}{counts}" for inset in insets],
         )
-        legend = f"-# *Scoring · {EMOJIS['novuspb1']} +5 pts · {EMOJIS['novuspb2']} +3 pts · {EMOJIS['novuspb3']} +1 pt*"
+        legend = f"-# *Scoring · {EMOJIS['pb1']} +5 pts · {EMOJIS['pb2']} +3 pts · {EMOJIS['pb3']} +1 pt*"
         self.assertTrue(standings.endswith(legend))
         children = view.children[0].children
         display_indices = [i for i, item in enumerate(children) if isinstance(item, bot.ui.TextDisplay)]
         _, podium_index, remaining_index = display_indices
         self.assertEqual(remaining_index, podium_index + 2)
         self.assertIsInstance(children[podium_index + 1], bot.ui.Separator)
-        self.assertIn(f"### {EMOJIS['novuspb3']} <@3>", children[podium_index].content)
+        self.assertIn(f"### {EMOJIS['pb3']} <@3>", children[podium_index].content)
         self.assertTrue(children[remaining_index].content.startswith("**4.** <@4>"))
         self.assertLessEqual(len(children), 10)
 
     def test_missing_trophy_keeps_the_podium_order(self):
         points = [dict(rank=i, member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
                   for i in range(1, 4)]
-        with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: {"novuspb2": EMOJIS["novuspb2"]}}):
+        with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: {"pb2": EMOJIS["pb2"]}}):
             lines = bot.top10_standings_text(points, 123).splitlines()
         self.assertTrue(lines[0].startswith("### #1 <@1>"))
-        self.assertTrue(lines[2].startswith(f"### {EMOJIS['novuspb2']} <@2>"))
+        self.assertTrue(lines[2].startswith(f"### {EMOJIS['pb2']} <@2>"))
         self.assertTrue(lines[4].startswith("### #3 <@3>"))
         self.assertEqual(len(bot.top10_standings_parts(points, 123)), 1)
 
@@ -63,7 +63,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         points = bot.rank_pb_points(entries)
         self.assertEqual([p["rank"] for p in points], [1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10])
         text = bot.top10_standings_text(points, 123)
-        self.assertEqual(text.count(f"### {EMOJIS['novuspb1']} <@"), 2)
+        self.assertEqual(text.count(f"### {EMOJIS['pb1']} <@"), 2)
         self.assertEqual(text.count("**10.**"), 3)
         self.assertNotIn("<@23>", text)
 
@@ -81,9 +81,9 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
     def test_novus_trophy_ids_override_stale_emoji_cache(self):
         guild = bot.NOVUS_GUILD_ID
         expected = (
-            "<:novuspb1:1572157972702953563>",
-            "<:novuspb2:1572155458423361637>",
-            "<:novuspb3:1572155471606054982>",
+            "<:pb1:1572259759548272752>",
+            "<:pb2:1572259827885940928>",
+            "<:pb3:1572260053191491634>",
         )
         with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild: EMOJIS}):
             self.assertEqual(tuple(bot.podium_icon(rank, guild) for rank in (1, 2, 3)), expected)
@@ -108,7 +108,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         text = "\n".join(parts)
         # Newlines for asserting across components are not sent to Discord.
         self.assertLessEqual(sum(len(part.encode("utf-16-le")) // 2 for part in parts), 4000)
-        self.assertEqual(text.count(EMOJIS["novuspb1"]), sum(map(len, leaders.values())))
+        self.assertEqual(text.count(EMOJIS["pb1"]), sum(map(len, leaders.values())))
         self.assertFalse(any(isinstance(item, bot.ui.Button) for item in panel.walk_children()))
         self.assertEqual(text.splitlines().count(bot.snapshot_team_line(recent[0])),
                          sum(map(len, leaders.values())))
@@ -119,16 +119,16 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         r = record(guild=123, proof=f"archive:{1:032x}.png")
         card = bot.FirstPlaceAnnouncementCard(r)
         text = str(card.to_components())
-        self.assertIn(f"{EMOJIS['novuspb1']} NEW NOVUS #1", text)
+        self.assertIn(f"{EMOJIS['pb1']} NEW NOVUS #1", text)
         self.assertIn("pb:proof:view:1", text)
+        icons = {rank: EMOJIS[f"pb{rank}"] for rank in range(1, 4)}
         original = "## 🏆 NEW NOVUS #1\n-# PB TIME\n## 🏆 other"
-        expected = f"## {EMOJIS['novuspb1']} NEW NOVUS #1\n-# PB TIME\n## 🏆 other"
-        self.assertEqual(bot.replace_first_trophy_heading(original, EMOJIS["novuspb1"]), expected)
-        older = "## <:novuspb1:1> NEW NOVUS #1\n## <:novuspb2:2> other"
-        new = f"## {EMOJIS['novuspb1']} NEW NOVUS #1\n## <:novuspb2:2> other"
-        self.assertEqual(bot.replace_first_trophy_heading(older, EMOJIS["novuspb1"]), new)
-        self.assertEqual(bot.replace_first_trophy_heading(older.replace("<:novuspb1:1>", ":novuspb1:"), EMOJIS["novuspb1"]), new)
-        self.assertEqual(bot.replace_first_trophy_heading(new, EMOJIS["novuspb1"]), new)
+        expected = f"## {icons[1]} NEW NOVUS #1\n-# PB TIME\n## 🏆 other"
+        self.assertEqual(bot.replace_legacy_pb_trophies(original, icons), expected)
+        older = "## <:novuspb1:1> NEW NOVUS #1\n-# :novuspb2: · <a:novuspb3:3>"
+        new = f"## {icons[1]} NEW NOVUS #1\n-# {icons[2]} · {icons[3]}"
+        self.assertEqual(bot.replace_legacy_pb_trophies(older, icons), new)
+        self.assertEqual(bot.replace_legacy_pb_trophies(new, icons), new)
 
     async def test_existing_announcement_edit_keeps_proof_and_controls(self):
         row = record(guild=123, proof=f"archive:{1:032x}.png")
@@ -141,11 +141,18 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict(bot.ACTIVITY_EMOJI_CACHE, clear=True):
             old = message(bot.FirstPlaceAnnouncementCard(row, leaderboard_url="https://example.org/board"))
+        previous_icons = {f"pb{i}": f"<:novuspb{i}:{123456789123456770+i}>"
+                          for i in range(1, 4)}
+        points = [dict(rank=i, member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
+                  for i in range(1, 4)]
+        with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: previous_icons}):
+            snapshot = message(bot.Home(points, guild_id=123))
             other = message(bot.FirstPlaceAnnouncementCard(row), author=25)
+        snapshot.edit = AsyncMock(side_effect=lambda **kwargs: message(kwargs["view"]))
         old.edit = AsyncMock(side_effect=lambda **kwargs: message(kwargs["view"]))
         other.edit = AsyncMock()
         async def history(**kwargs):
-            for msg in (old, other):
+            for msg in (old, snapshot, other):
                 yield msg
 
         channel = SimpleNamespace(guild=SimpleNamespace(id=123), history=history)
@@ -155,11 +162,14 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
               patch.object(bot.store, "one", new=AsyncMock(return_value=None)),
               patch.object(bot.store, "conn", conn),
               patch.object(bot.asyncio, "sleep", new=AsyncMock())):
-            await bot.refresh_first_announcement_trophy_icons(123)
+            await bot.refresh_public_post_trophy_icons(123)
         args = old.edit.await_args.kwargs
         body = str(args["view"].to_components())
-        self.assertIn(EMOJIS["novuspb1"], body)
+        self.assertIn(EMOJIS["pb1"], body)
         self.assertIn("pb:proof:view:1", body)
         self.assertIn("https://example.org/board", body)
         self.assertNotIn("attachments", args)
+        snapshot_body = str(snapshot.edit.await_args.kwargs["view"].to_components())
+        self.assertTrue(all(emoji in snapshot_body for emoji in EMOJIS.values()))
+        self.assertNotIn("novuspb", snapshot_body)
         other.edit.assert_not_called()
