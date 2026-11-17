@@ -830,8 +830,10 @@ async def on_ready():
     single_heading=standings.count(PB_TOP10_TITLE)==1 and "### TOP 10" not in standings
     ranks=[entry["rank"] for entry in points]
     matches_ranked_rows=body==PB_TOP10_TITLE+"\n"+top10_standings_text(points,guild.id)
-    logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s",
-                 message.id,ranks,matches_ranked_rows)
+    dividers=sum(isinstance(item,ui.Separator) for item in ui.LayoutView.from_message(confirmed).walk_children())
+    podium_divider=dividers==3
+    logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s podium divider=%s",
+                 message.id,ranks,matches_ranked_rows,podium_divider)
     logging.info("Verified overall PB Top 10 on message %s: inline trophies in small podium headings=%s numbered ranks=%s indented trophy counts with multiplication signs=%s labeled trophy scoring footer with regular points=%s single heading=%s",
                  message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
@@ -974,7 +976,7 @@ class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
   await i.response.defer(ephemeral=True)
 
 
-def top10_standings_text(points,guild_id):
+def top10_standings_parts(points,guild_id):
  footer=top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True)
 
  def row(entry,names):
@@ -984,16 +986,18 @@ def top10_standings_text(points,guild_id):
   breakdown=top10_trophy_subtext(guild_id,(entry["firsts"],entry["seconds"],entry["thirds"]),rank=rank)
   return f"{heading}{icon} {names} · **{entry['points']} pts**\n{breakdown}"
 
- def render(rows):
-  return "\n".join([*rows,"",footer])
+ def render(rows,ranks):
+  split=next((index for index,rank in enumerate(ranks) if rank>3),0)
+  rest="\n".join([*rows[split:],"",footer])
+  return ("\n".join(rows[:split]),rest) if split else (rest,)
 
- def fits(content):
-  return len((PB_TOP10_TITLE+content).encode("utf-16-le"))//2<=4000
+ def fits(parts):
+  return len((PB_TOP10_TITLE+"".join(parts)).encode("utf-16-le"))//2<=4000
 
  rows=[row(entry,f"<@{entry['member_id']}>") for entry in points]
- content=render(rows or ["-# No approved PB points yet."])
- if fits(content):
-  return content
+ parts=render(rows or ["-# No approved PB points yet."],[entry["rank"] for entry in points])
+ if fits(parts):
+  return parts
 
  # Combine mentions on oversized boards without splitting tied players by ID.
  groups={}
@@ -1001,15 +1005,20 @@ def top10_standings_text(points,guild_id):
   groups.setdefault(entry["rank"],[]).append(entry)
  grouped=list(groups.values())
  rows=[row(group[0]," · ".join(f"<@{entry['member_id']}>" for entry in group)) for group in grouped]
- content=render(rows)
+ ranks=[group[0]["rank"] for group in grouped]
+ parts=render(rows,ranks)
  for index in sorted(range(len(rows)),key=lambda i:len(rows[i]),reverse=True):
-  if fits(content):
+  if fits(parts):
    break
   group=grouped[index]
   if len(group)>1:
    rows[index]=row(group[0],f"{len(group)} players tied")
-   content=render(rows)
- return content
+   parts=render(rows,ranks)
+ return parts
+
+
+def top10_standings_text(points,guild_id):
+ return "\n".join(top10_standings_parts(points,guild_id))
 
 
 class Home(PBLayoutView):
@@ -1023,7 +1032,10 @@ class Home(PBLayoutView):
   hero.add_item(banner)
   hero.add_item(ui.TextDisplay(PB_TOP10_TITLE))
   hero.add_item(ui.Separator())
-  hero.add_item(ui.TextDisplay(top10_standings_text(points,guild_id)))
+  for index,part in enumerate(top10_standings_parts(points,guild_id)):
+   if index:
+    hero.add_item(ui.Separator())
+   hero.add_item(ui.TextDisplay(part))
   hero.add_item(ui.Separator())
 
   actions=ui.ActionRow()
