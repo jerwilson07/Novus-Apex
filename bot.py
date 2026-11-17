@@ -950,6 +950,9 @@ async def on_ready():
                   sum(bool(proof_text(r)) for _,rows in blocks for r in rows),
                   len(re.findall(r" · PB #\d+",board_text)),
                   sum(line.startswith("## ") and line.endswith(clean(activity)) for line in board_text.splitlines()))
+     if activity=="The Fractured Archive":
+      logging.info("Verified TFA 5-Man card present=%s redundant_jump_link=%s",
+                   "### 5-Man" in board_text.splitlines(),"[5-Man ↓](" in board_text)
     for i,total in enumerate(runner_ups):
      verified_runner_up_slots[i]+=total
     if runner_ups!=(count,count) or (count and not {2,3}.issubset(loaded)):
@@ -1554,6 +1557,12 @@ def linked_board_view(factory,activity,blocks,*,show_title=True,text_limit=PB_PU
  )
 
 
+def raid_continuation_label(activity,blocks):
+ label=blocks[0][0] if blocks else ""
+ # The Fractured Archive's 5-Man card is directly below the other scales.
+ return None if activity=="The Fractured Archive" and label=="5-Man" else label
+
+
 def raid_board_page_plan(activity,blocks):
  full=RaidLeaderboard(activity,blocks)
  if pb_view_text_units(full)<=PB_PUBLIC_TEXT_LIMIT:
@@ -1576,7 +1585,7 @@ def raid_board_page_plan(activity,blocks):
  if current:
   groups.append(current)
  return [
-  (group[0][0] if group else "",linked_board_view(
+  (raid_continuation_label(activity,group),linked_board_view(
    RaidLeaderboard,activity,group,show_title=index==0,
    text_limit=PB_PUBLIC_TEXT_LIMIT-(180 if index<len(groups)-1 else 0),
   ))
