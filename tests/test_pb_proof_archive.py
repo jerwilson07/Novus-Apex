@@ -242,8 +242,8 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(pages), 1)
         for index, (label, view) in enumerate(pages):
             if index + 1 < len(pages):
-                view.add_item(bot.raid_page_link(pages[index + 1][0],
-                                                "https://discord.com/channels/123/456/789"))
+                bot.add_board_page_link(view, pages[index + 1][0],
+                                        "https://discord.com/channels/123/456/789")
             self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
             self.assertLessEqual(len(list(view.walk_children())), 40)
         text = "\n".join(item.content for _, view in pages for item in view.walk_children()
@@ -356,13 +356,15 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(pages), 1)
         for i, (_, view) in enumerate(pages):
             if i + 1 < len(pages):
-                view.add_item(bot.raid_page_link(pages[i + 1][0],
-                                               "https://discord.com/channels/123/456/789"))
+                bot.add_board_page_link(view, pages[i + 1][0],
+                                        "https://discord.com/channels/123/456/789")
             self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
         text = "\n".join(item.content for _, view in pages for item in view.walk_children()
                          if isinstance(item, bot.ui.TextDisplay))
         self.assertEqual(text.count(f"[Proof]({proof})"), 15)
         self.assertEqual(text.count("### RAID SNAPSHOT"), 1)
+        self.assertEqual(text.count("### RECENT PBs"), 1)
+        self.assertNotIn("[Recent PBs ↓]", text)
         self.assertNotIn(" · PB #", text)
 
     async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
