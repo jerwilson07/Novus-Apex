@@ -745,6 +745,10 @@ async def show_my_pbs(i):
   ephemeral=True,allowed_mentions=discord.AllowedMentions.none()
  )
 
+def pb_scroll_to_top_text(url):
+ return f"## [↑ CLICK TO SCROLL TO THE TOP ↑]({url})"
+
+
 async def paced_startup_edit(message, **kwargs):
  # Channel-wide edit bursts receive 429s. Leave headroom for other bots.
  await message.edit(**kwargs)
@@ -858,7 +862,13 @@ async def on_ready():
     ch=bot.get_channel(footer["channel"]) or await bot.fetch_channel(footer["channel"])
     message=await ch.fetch_message(footer["message"])
     url=f"https://discord.com/channels/{guild.id}/{panel['channel']}/{panel['message']}"
-    await paced_startup_edit(message, content=f"## [↑ CLICK TO SCROLL TO THE TOP]({url})",allowed_mentions=discord.AllowedMentions.none())
+    expected=pb_scroll_to_top_text(url)
+    await paced_startup_edit(message, content=expected,allowed_mentions=discord.AllowedMentions.none())
+    confirmed=await ch.fetch_message(message.id)
+    if confirmed.content==expected:
+     logging.info("Verified PB scroll-to-top footer message %s points to %s",message.id,url)
+    else:
+     logging.warning("PB scroll-to-top footer readback did not match for message %s",message.id)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB scroll-to-top footer")
   proof_boards_ok=True
@@ -3378,7 +3388,7 @@ async def pbpanel(i:discord.Interaction):
    allowed_mentions=discord.AllowedMentions.none()
   )
   footer_msg=await i.channel.send(
-   f"## [↑ CLICK TO SCROLL TO THE TOP]({panel_msg.jump_url})",
+   pb_scroll_to_top_text(panel_msg.jump_url),
    allowed_mentions=discord.AllowedMentions.none()
   )
 
