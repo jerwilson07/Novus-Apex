@@ -1,4 +1,5 @@
 import os, re, asyncio, logging
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qs, urlparse
@@ -12,6 +13,7 @@ from proof_archive import (
  ProofUnavailable, archive_discord_proof, archive_path,
  attachment_candidates, discord_attachment_key, is_private_proof,
 )
+from podium_image import FILENAME as PODIUM_FILENAME, render_podium
 
 load_dotenv()
 TOKEN=os.getenv("DISCORD_TOKEN","")
@@ -878,15 +880,11 @@ async def on_ready():
     ch=bot.get_channel(home["channel"]) or await bot.fetch_channel(home["channel"])
     message=await ch.fetch_message(home["message"])
     points=await calculate_pb_points(guild.id)
-    view=Home(points,guild_id=guild.id)
-    await paced_startup_edit(message, view=view,allowed_mentions=discord.AllowedMentions.none())
+    view=await Home.for_points(guild.id,points)
+    await paced_startup_edit(message, **view.edit_options(message),allowed_mentions=discord.AllowedMentions.none())
     confirmed=await ch.fetch_message(message.id)
     body=old_announcement_text(confirmed)
     standings=body.splitlines()
-    live=[n for n in loaded if any(
-     re.fullmatch(rf"{re.escape(PB_TOP10_PODIUM_HEADING+podium_icon(n,guild.id))} <@[0-9]+> · \*\*[0-9]+ pts\*\*",line)
-     for line in standings
-    )]
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
     count_indent_pattern="(?:"+"|".join(map(re.escape,PB_TROPHY_COUNT_INDENTS))+")"
@@ -898,13 +896,18 @@ async def on_ready():
     scoring_footer=bool(standings and standings[-1]==top10_trophy_subtext(guild.id,PB_PLACEMENT_POINTS,scoring=True))
     single_heading=standings.count(PB_TOP10_TITLE)==1 and "### TOP 10" not in standings
     ranks=[entry["rank"] for entry in points]
-    matches_ranked_rows=body==PB_TOP10_TITLE+"\n"+top10_standings_text(points,guild.id)
-    dividers=sum(isinstance(item,ui.Separator) for item in ui.LayoutView.from_message(confirmed).walk_children())
+    matches_ranked_rows=body==PB_TOP10_TITLE+"\n"+"\n".join(view.standing_parts)
+    live_parts=list(ui.LayoutView.from_message(confirmed).walk_children())
+    podium_uploaded=any(a.filename==PODIUM_FILENAME for a in confirmed.attachments)
+    podium_embedded=any(isinstance(item,ui.MediaGallery) and any(
+     tile.description==view.podium_description for tile in item.items if tile.description
+    ) for item in live_parts)
+    dividers=sum(isinstance(item,ui.Separator) for item in live_parts)
     podium_divider=dividers==3
     logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s podium divider=%s",
                  message.id,ranks,matches_ranked_rows,podium_divider)
-    logging.info("Verified overall PB Top 10 on message %s: inline trophies in small podium headings=%s numbered ranks=%s indented trophy counts with multiplication signs=%s labeled trophy scoring footer with regular points=%s single heading=%s",
-                 message.id,live,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
+    logging.info("Verified overall PB Top 10 on message %s: podium image uploaded=%s embedded=%s numbered ranks=%s indented trophy counts=%s scoring footer=%s single heading=%s",
+                 message.id,podium_uploaded,podium_embedded,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
@@ -1050,8 +1053,9 @@ async def on_ready():
    try:
     channel=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
     message=await channel.fetch_message(tracked["message"])
-    await paced_startup_edit(message, 
-     view=await Home.make(tracked["guild"]),
+    view=await Home.make(tracked["guild"])
+    await paced_startup_edit(message,
+     **view.edit_options(message),
      allowed_mentions=discord.AllowedMentions.none()
     )
    except discord.HTTPException:
@@ -1134,9 +1138,11 @@ def top10_standings_text(points,guild_id):
 
 
 class Home(PBLayoutView):
- def __init__(self,points=None,*,guild_id=None):
+ def __init__(self,points=None,*,guild_id=None,podium=None):
   super().__init__(timeout=None)
   points=points or []
+  self.podium_png,self.podium_description=podium or (None,None)
+  self.standing_parts=top10_standings_parts(points,guild_id)
 
   hero=ui.Container(accent_colour=GOLD)
   banner=ui.MediaGallery()
@@ -1144,7 +1150,17 @@ class Home(PBLayoutView):
   hero.add_item(banner)
   hero.add_item(ui.TextDisplay(PB_TOP10_TITLE))
   hero.add_item(ui.Separator())
-  for index,part in enumerate(top10_standings_parts(points,guild_id)):
+  if self.podium_png is not None:
+   gallery=ui.MediaGallery()
+   gallery.add_item(media=f"attachment://{PODIUM_FILENAME}",description=self.podium_description)
+   hero.add_item(gallery)
+   hero.add_item(ui.Separator())
+   # Use the existing formatted ranks 4 through 10 verbatim. When there are
+   # only three players, the old single block contains both podium and legend.
+   self.standing_parts=self.standing_parts[1:] or (
+    "\n"+top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True),
+   )
+  for index,part in enumerate(self.standing_parts):
    if index:
     hero.add_item(ui.Separator())
    hero.add_item(ui.TextDisplay(part))
@@ -1182,7 +1198,51 @@ class Home(PBLayoutView):
 
  @classmethod
  async def make(cls,g):
-  return cls(await calculate_pb_points(g),guild_id=g)
+  return await cls.for_points(g,await calculate_pb_points(g))
+
+ @classmethod
+ async def for_points(cls,g,points):
+  podium=None
+  leaders=[row for row in points if row["rank"]<=3]
+  # An exact tie retains the text standings so no shared placement is hidden.
+  if g==NOVUS_GUILD_ID and [row["rank"] for row in leaders]==[1,2,3]:
+   try:
+    names=await podium_player_names(g,leaders)
+    if names:
+     podium=await asyncio.to_thread(render_podium,leaders,names)
+   except (discord.HTTPException,OSError,ValueError):
+    logging.exception("Could not render the PB podium; using text standings")
+  return cls(points,guild_id=g,podium=podium)
+
+ def podium_file(self):
+  return discord.File(BytesIO(self.podium_png),filename=PODIUM_FILENAME) if self.podium_png is not None else None
+
+ def send_options(self):
+  file=self.podium_file()
+  return {"view":self,**({"file":file} if file else {})}
+
+ def edit_options(self,message):
+  file=self.podium_file()
+  attachments=[a for a in message.attachments if a.filename!=PODIUM_FILENAME]
+  if file or len(attachments)!=len(message.attachments):
+   return {"view":self,"attachments":[*attachments,*([file] if file else [])]}
+  return {"view":self}
+
+
+async def podium_player_names(g,leaders):
+ guild=bot.get_guild(g)
+ if guild is None:
+  return None
+ async def get_name(member_id):
+  person=guild.get_member(member_id)
+  if person is None:
+   try:
+    person=await guild.fetch_member(member_id)
+   except discord.NotFound:
+    person=bot.get_user(member_id) or await bot.fetch_user(member_id)
+  return person.display_name
+ ids=[row["member_id"] for row in leaders]
+ return dict(zip(ids,await asyncio.gather(*(get_name(i) for i in ids))))
 
 
 def snapshot_raid_heading(activity):
@@ -2515,8 +2575,9 @@ async def refresh_panel(g,activity=None):
   try:
    ch=bot.get_channel(home["channel"]) or await bot.fetch_channel(home["channel"])
    msg=await ch.fetch_message(home["message"])
+   view=await Home.make(g)
    await msg.edit(
-    view=await Home.make(g),
+    **view.edit_options(msg),
     allowed_mentions=discord.AllowedMentions.none()
    )
   except discord.HTTPException:
@@ -3794,8 +3855,9 @@ async def post_current_pb_board(channel,guild_id):
  Reuse Home.make so banner, points layout, and action buttons remain identical.
  This is a one-message snapshot and does not alter persistent panel tracking.
  """
+ view=await Home.make(guild_id)
  message=await channel.send(
-  view=await Home.make(guild_id),
+  **view.send_options(),
   allowed_mentions=discord.AllowedMentions.none()
  )
  return message,1
@@ -3889,7 +3951,8 @@ async def pbpanel(i:discord.Interaction):
  await store.clear_boss_boards(i.guild_id)
 
  try:
-  panel_msg=await i.channel.send(view=await Home.make(i.guild_id))
+  view=await Home.make(i.guild_id)
+  panel_msg=await i.channel.send(**view.send_options())
 
   # Post a temporary directory first so it stays above the leaderboards.
   boss_msg=await i.channel.send(view=BossDirectory())

@@ -1,8 +1,10 @@
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot
+from PIL import Image
 from discord.components import _component_factory
 from test_pb_ui import record
 
@@ -53,6 +55,47 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(lines[2].startswith(f"## {EMOJIS['pb2']} <@2>"))
         self.assertTrue(lines[4].startswith("## #3 <@3>"))
         self.assertEqual(len(bot.top10_standings_parts(points, 123)), 1)
+
+    async def test_live_home_embeds_an_image_and_keeps_lower_rows_identical(self):
+        guild_id = bot.NOVUS_GUILD_ID
+        rows = [dict(rank=i, member_id=i, points=30-i, firsts=5, seconds=2, thirds=1)
+                for i in range(1, 11)]
+        names = {1: "Alpha", 2: "Bravo", 3: "Charlie"}
+        with patch.object(bot, "podium_player_names", new=AsyncMock(return_value=names)):
+            view = await bot.Home.for_points(guild_id, rows)
+            only_podium = await bot.Home.for_points(guild_id, rows[:3])
+        before = bot.Home(rows, guild_id=guild_id)
+        self.assertEqual(view.standing_parts, before.standing_parts[1:])
+        self.assertEqual(only_podium.standing_parts[0].strip(), before.standing_parts[-1].splitlines()[-1])
+        panel = view.children[0]
+        self.assertIsInstance(panel.children[3], bot.ui.MediaGallery)
+        self.assertTrue(panel.children[3].items[0].media.url.endswith(bot.PODIUM_FILENAME))
+        self.assertIn("#1 Alpha, 29 points. Trophies: 5 first, 2 second, 1 third.", view.podium_description)
+        self.assertIn("#3 Charlie, 27 points.", view.podium_description)
+        self.assertNotIn("## <:pb1:", "\n".join(view.standing_parts))
+        self.assertEqual(panel.children[-1].to_component_dict(), before.children[0].children[-1].to_component_dict())
+        with Image.open(BytesIO(view.podium_png)) as preview:
+            self.assertEqual((preview.format, preview.size), ("PNG", (1170, 942)))
+            preview.verify()
+        old_image = SimpleNamespace(filename=bot.PODIUM_FILENAME)
+        unrelated_attachment = SimpleNamespace(filename="other.png")
+        message = SimpleNamespace(attachments=[old_image, unrelated_attachment])
+        edit_files = view.edit_options(message)["attachments"]
+        self.assertEqual(edit_files[0], unrelated_attachment)
+        self.assertEqual(edit_files[1].filename, bot.PODIUM_FILENAME)
+        self.assertEqual(view.send_options()["file"].filename, bot.PODIUM_FILENAME)
+        self.assertEqual(before.edit_options(message)["attachments"], [unrelated_attachment])
+
+    async def test_shared_first_uses_text_for_all_tied_players(self):
+        ranks = (1, 1, 3, 4)
+        rows = [dict(rank=rank, member_id=i, points=30-rank, firsts=5, seconds=2, thirds=1)
+                for i,rank in enumerate(ranks,1)]
+        with patch.object(bot, "podium_player_names", new=AsyncMock()) as names:
+            view = await bot.Home.for_points(bot.NOVUS_GUILD_ID, rows)
+        names.assert_not_called()
+        self.assertIsNone(view.podium_png)
+        self.assertIn("<@1>", view.standing_parts[0])
+        self.assertIn("<@2>", view.standing_parts[0])
 
     def test_exact_ties_share_ranks_and_keep_cutoff_ties(self):
         def score(member_id, firsts):

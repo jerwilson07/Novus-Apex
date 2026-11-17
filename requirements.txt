@@ -2,3 +2,4 @@ discord.py>=2.7,<2.8
 aiosqlite>=0.20,<1
 python-dotenv>=1,<2
 aiohttp>=3.9,<4
+Pillow>=11,<14
