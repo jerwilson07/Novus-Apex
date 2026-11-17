@@ -434,6 +434,35 @@ class PBLayoutTests(unittest.TestCase):
         self.assertEqual([button.label for button in buttons.children],
                          ["View Proof", "View Leaderboard"])
 
+    def test_announcement_title_hides_non_dt2_default_but_keeps_special_variants(self):
+        cases = [
+            ("Alchemical Hydra", "Standard", "Alchemical Hydra"),
+            ("Royal Titans", "Standard", "Royal Titans"),
+            ("Vardorvis", "Normal", "Vardorvis · Normal"),
+            ("The Whisperer", "Awakened", "The Whisperer · Awakened"),
+            ("Theatre of Blood", "Hard Mode · Trio", "Theatre of Blood · Hard Mode · Trio"),
+            ("The Fractured Archive", "Duo", "The Fractured Archive · Duo"),
+        ]
+        for activity, variant, expected in cases:
+            with self.subTest(activity=activity, variant=variant):
+                pb = record(activity=activity, variant=variant)
+                header = bot.FirstPlaceAnnouncementCard(pb).children[0].children[0].children[0].content
+                self.assertIn(f"**{expected}**", header.splitlines())
+
+    def test_old_first_announcement_restyle_changes_only_default_title_and_time(self):
+        before = (
+            "## #1 NEW NOVUS #1\n**Alchemical Hydra · Standard**\n"
+            "-# Achieved by <@456>\n-# PB TIME\n## 0:59.90\n"
+            "-# PB DATE\n**2026-11-17**\n[View Proof](https://example.com/proof)"
+        )
+        expected = before.replace("Alchemical Hydra · Standard", "Alchemical Hydra").replace(
+            "-# PB TIME\n## 0:59.90\n", "-# PB TIME\n**59.90**\n\n"
+        )
+        self.assertEqual(bot.restyle_first_announcement_text(before), expected)
+        self.assertEqual(bot.restyle_first_announcement_text(expected), expected)
+        special = "**Vardorvis · Normal**\n**Theatre of Blood · Hard Mode · Trio**"
+        self.assertEqual(bot.restyle_first_announcement_text(special), special)
+
     def test_new_first_card_handles_non_image_evidence(self):
         pb = record(id=83, proof="https://example.com/watch")
         panel = bot.FirstPlaceAnnouncementCard(pb).children[0]
