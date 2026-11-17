@@ -27,7 +27,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"### {EMOJIS[f'novuspb{rank}']} <@{rank}>", standings)
         for rank in range(4, 11):
             self.assertIn(f"**{rank}.** <@{rank}>", standings)
-        counts = f"-# *{EMOJIS['novuspb1']} × 1 · {EMOJIS['novuspb2']} × 0 · {EMOJIS['novuspb3']} × 0*"
+        counts = f"-# \u200b\u2003\u2002*{EMOJIS['novuspb1']} × 1 · {EMOJIS['novuspb2']} × 0 · {EMOJIS['novuspb3']} × 0*"
         self.assertEqual(standings.count(counts), 10)
         legend = f"-# *Scoring · {EMOJIS['novuspb1']} +5 pts · {EMOJIS['novuspb2']} +3 pts · {EMOJIS['novuspb3']} +1 pt*"
         self.assertTrue(standings.endswith(legend))
