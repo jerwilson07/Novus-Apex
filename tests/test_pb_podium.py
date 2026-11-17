@@ -24,7 +24,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         standings = "\n".join(item.content for item in components
                               if isinstance(item, bot.ui.TextDisplay))
         for rank in range(1, 4):
-            self.assertIn(f"### {EMOJIS[f'pb{rank}']} <@{rank}>", standings)
+            self.assertIn(f"## {EMOJIS[f'pb{rank}']} <@{rank}>", standings)
         for rank in range(4, 11):
             self.assertIn(f"**{rank}.** <@{rank}>", standings)
         counts = f"*{EMOJIS['pb1']} × 1 · {EMOJIS['pb2']} × 0 · {EMOJIS['pb3']} × 0*"
@@ -40,7 +40,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         _, podium_index, remaining_index = display_indices
         self.assertEqual(remaining_index, podium_index + 2)
         self.assertIsInstance(children[podium_index + 1], bot.ui.Separator)
-        self.assertIn(f"### {EMOJIS['pb3']} <@3>", children[podium_index].content)
+        self.assertIn(f"## {EMOJIS['pb3']} <@3>", children[podium_index].content)
         self.assertTrue(children[remaining_index].content.startswith("**4.** <@4>"))
         self.assertLessEqual(len(children), 10)
 
@@ -49,9 +49,9 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
                   for i in range(1, 4)]
         with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: {"pb2": EMOJIS["pb2"]}}):
             lines = bot.top10_standings_text(points, 123).splitlines()
-        self.assertTrue(lines[0].startswith("### #1 <@1>"))
-        self.assertTrue(lines[2].startswith(f"### {EMOJIS['pb2']} <@2>"))
-        self.assertTrue(lines[4].startswith("### #3 <@3>"))
+        self.assertTrue(lines[0].startswith("## #1 <@1>"))
+        self.assertTrue(lines[2].startswith(f"## {EMOJIS['pb2']} <@2>"))
+        self.assertTrue(lines[4].startswith("## #3 <@3>"))
         self.assertEqual(len(bot.top10_standings_parts(points, 123)), 1)
 
     def test_exact_ties_share_ranks_and_keep_cutoff_ties(self):
@@ -63,7 +63,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         points = bot.rank_pb_points(entries)
         self.assertEqual([p["rank"] for p in points], [1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10])
         text = bot.top10_standings_text(points, 123)
-        self.assertEqual(text.count(f"### {EMOJIS['pb1']} <@"), 2)
+        self.assertEqual(text.count(f"## {EMOJIS['pb1']} <@"), 2)
         self.assertEqual(text.count("**10.**"), 3)
         self.assertNotIn("<@23>", text)
 
