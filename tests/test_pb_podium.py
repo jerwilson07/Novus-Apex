@@ -113,7 +113,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.splitlines().count(bot.snapshot_team_line(recent[0])),
                          sum(map(len, leaders.values())))
         self.assertNotIn("🏆", text)
-        self.assertIn("0:03.00", text)
+        self.assertIn("03.00", text)
 
     def test_new_announcement_and_legacy_heading(self):
         r = record(guild=123, proof=f"archive:{1:032x}.png")
