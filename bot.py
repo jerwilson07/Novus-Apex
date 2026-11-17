@@ -947,6 +947,8 @@ async def on_ready():
                   "For compact entries" in snapshot_text)
      logging.info("Verified enlarged raid name headings on snapshot %s: %s/%s",
                   message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
+     logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s",
+                  message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)))
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
@@ -1165,21 +1167,62 @@ class SnapshotPanel(PBLayoutView):
   return fit_snapshot_panel(leaders,await store.recent_approved(g,3))
 
 
+PB_PUBLIC_TEXT_LIMIT=4000
+
+
+def pb_view_text_units(view):
+ return sum(len(item.content.encode("utf-16-le"))//2 for item in view.walk_children()
+            if isinstance(item,ui.TextDisplay))
+
+
+def fit_public_proof_links(render,priority_groups,context):
+ full=render(())
+ full_size=pb_view_text_units(full)
+ if full_size<=PB_PUBLIC_TEXT_LIMIT:
+  return full
+
+ # Fit the most links within each priority tier. Measuring the rendered
+ # cost accounts for repeated PBs and the space used by fallback labels.
+ seen=set()
+ tiers=[]
+ for group in priority_groups:
+  tier=[]
+  for r in group:
+   sid=r["id"]
+   if sid not in seen and proof_text(r):
+    seen.add(sid)
+    tier.append(sid)
+  tiers.append(tier)
+
+ no_links=frozenset(seen)
+ base_size=pb_view_text_units(render(no_links))
+ costs={sid:pb_view_text_units(render(no_links-{sid}))-base_size for sid in seen}
+ budget=PB_PUBLIC_TEXT_LIMIT-base_size
+ omit=set(no_links)
+ for sid,cost in costs.items():
+  if cost<=0:
+   omit.remove(sid)
+   budget-=cost
+ for tier in tiers:
+  for sid in sorted(tier,key=costs.__getitem__):
+   if sid in omit and costs[sid]<=budget:
+    omit.remove(sid)
+    budget-=costs[sid]
+ fitted=render(omit)
+ used=pb_view_text_units(fitted)
+ logging.info("PB proof link fit for %s: kept=%s omitted=%s text=%s/%s remaining=%s smallest_omitted_cost=%s",
+              context,len(seen)-len(omit),len(omit),used,PB_PUBLIC_TEXT_LIMIT,
+              PB_PUBLIC_TEXT_LIMIT-used,min((costs[sid] for sid in omit),default=None))
+ return fitted
+
+
 def fit_snapshot_panel(leaders,recent):
- # Omit redundant long links before dropping any names, times, or badges.
- omit=set()
- choices=[r for rows in leaders.values() for r in rows[1:]]
- choices.extend(recent)
- choices.extend(rows[0] for rows in leaders.values() if rows)
- panel=SnapshotPanel(leaders,recent)
- for r in choices:
-  if sum(len(i.content.encode("utf-16-le"))//2 for i in panel.walk_children()
-         if isinstance(i,ui.TextDisplay))<=4000:
-   break
-  if proof_text(r,omit=omit):
-   omit.add(r["id"])
-   panel=SnapshotPanel(leaders,recent,omit=omit)
- return panel
+ return fit_public_proof_links(
+  lambda omit:SnapshotPanel(leaders,recent,omit=omit),
+  ([rows[0] for rows in leaders.values() if rows],recent,
+   [r for rows in leaders.values() for r in rows[1:]]),
+  "Raid Snapshot",
+ )
 
 
 class BossDirectory(PBLayoutView):
@@ -1271,8 +1314,9 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), heading=""):
  champion_icon=podium_icon(1,champion["guild"])
  champion_text=(
   f"{heading}{PB_FEATURED_HEADING}{champion_icon} {fmt(champion['ms'])}\n"
-  f"{players_with_proof(champion,omit=omit)}\n"
-  f"-# ✔️ {pb_date_label(champion['pb_date'])}"
+  f"{players_with_proof(champion,omit=omit)}"
+  + (f" · PB #{champion['id']}" if champion["id"] in omit else "")
+  + f"\n-# ✔️ {pb_date_label(champion['pb_date'])}"
  )
  panel.add_item(first_place_section(champion,champion_text))
 
@@ -1284,7 +1328,7 @@ def add_featured_ranking(panel, results, *, compact=False, omit=(), heading=""):
    continue
   r=results[rank]
   evidence=proof_text(r,omit=omit)
-  proof=f" · {evidence}" if evidence else ""
+  proof=f" · {evidence}" if evidence else (f" · PB #{r['id']}" if r["id"] in omit else "")
   remaining.append(
    f"{icon} **{fmt(r['ms'])}** · {public_members(r)}{proof}"
   )
@@ -1401,26 +1445,13 @@ class RaidLeaderboard(PBLayoutView):
 
 
 def linked_board_view(factory,activity,blocks):
- view=factory(activity,blocks)
  if factory is not RaidLeaderboard:
-  return view
- # Discord limits all Text Display strings in one message to 4,000
- # characters. Preserve all entries and prioritize champion links.
- def length():
-  return sum(len(item.content.encode("utf-16-le"))//2 for item in view.walk_children()
-             if isinstance(item,ui.TextDisplay))
- if length()<=4000:
-  return view
- omit=set()
- for rank in range(4,-1,-1):
-  for _,rows in reversed(blocks):
-   if rank<len(rows) and proof_text(rows[rank]):
-    omit.add(rows[rank]["id"])
-    view=factory(activity,blocks,omit=omit)
-    if length()<=4000:
-     logging.warning("Trimmed %s proof links to fit Discord text limit for %s",len(omit),activity)
-     return view
- return view
+  return factory(activity,blocks)
+ return fit_public_proof_links(
+  lambda omit:factory(activity,blocks,omit=omit),
+  ([rows[rank] for _,rows in blocks if rank<len(rows)] for rank in range(5)),
+  activity,
+ )
 
 
 def proof_attachment_name(r,path):
