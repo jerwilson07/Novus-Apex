@@ -284,13 +284,14 @@ class PBLayoutTests(unittest.TestCase):
                 self.assertIn(f"## {bot.activity_icon(raid)}{raid}", text.splitlines())
         self.assertIn("-# Be the first to claim this record!", text)
 
-    def test_snapshot_lists_up_to_three_times_with_scale_and_proof_only(self):
+    def test_snapshot_lists_one_winner_per_scale_with_time_and_proof_only(self):
         activity = "The Fractured Archive"
         fastest = record(id=10, ms=60000, variant="5-Man", member_ids="1,2,3,4,5")
         large_tie = record(id=11, ms=70000, variant="4-Man", member_ids="6,7,8,9")
         small_tie = record(id=12, ms=70000, variant="Duo", member_ids="10,11")
         slower = record(id=13, ms=80000, variant="Solo", member_ids="12")
-        top = bot.snapshot_top_results([slower, large_tie, small_tie, fastest])
+        same_scale_runner_up = record(id=14, ms=61000, variant="5-Man", member_ids="14,15,16,17,18")
+        top = bot.snapshot_top_results([slower, large_tie, small_tie, fastest, same_scale_runner_up])
         self.assertEqual([row["id"] for row in top], [10, 12, 11])
         view = bot.SnapshotPanel({activity: top + [slower]})
         lines = [line for item in view.children[0].walk_children()
@@ -299,8 +300,8 @@ class PBLayoutTests(unittest.TestCase):
         ranked = [line for line in lines if " · [Proof](" in line]
         self.assertEqual(ranked, [
             "#1 **1:00.00** · 5-Man · [Proof](https://example.com/proof.png)",
-            "#2 **1:10.00** · Duo · [Proof](https://example.com/proof.png)",
-            "#3 **1:10.00** · 4-Man · [Proof](https://example.com/proof.png)",
+            "#1 **1:10.00** · Duo · [Proof](https://example.com/proof.png)",
+            "#1 **1:10.00** · 4-Man · [Proof](https://example.com/proof.png)",
         ])
         self.assertFalse(any("<@" in line or "✔️" in line for line in lines))
 
