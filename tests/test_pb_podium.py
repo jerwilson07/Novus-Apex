@@ -35,7 +35,14 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         )
         legend = f"-# *Scoring · {EMOJIS['novuspb1']} +5 pts · {EMOJIS['novuspb2']} +3 pts · {EMOJIS['novuspb3']} +1 pt*"
         self.assertTrue(standings.endswith(legend))
-        self.assertLessEqual(len(view.children[0].children), 10)
+        children = view.children[0].children
+        display_indices = [i for i, item in enumerate(children) if isinstance(item, bot.ui.TextDisplay)]
+        _, podium_index, remaining_index = display_indices
+        self.assertEqual(remaining_index, podium_index + 2)
+        self.assertIsInstance(children[podium_index + 1], bot.ui.Separator)
+        self.assertIn(f"### {EMOJIS['novuspb3']} <@3>", children[podium_index].content)
+        self.assertTrue(children[remaining_index].content.startswith("**4.** <@4>"))
+        self.assertLessEqual(len(children), 10)
 
     def test_missing_trophy_keeps_the_podium_order(self):
         points = [dict(rank=i, member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
@@ -45,6 +52,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(lines[0].startswith("### #1 <@1>"))
         self.assertTrue(lines[2].startswith(f"### {EMOJIS['novuspb2']} <@2>"))
         self.assertTrue(lines[4].startswith("### #3 <@3>"))
+        self.assertEqual(len(bot.top10_standings_parts(points, 123)), 1)
 
     def test_exact_ties_share_ranks_and_keep_cutoff_ties(self):
         def score(member_id, firsts):
