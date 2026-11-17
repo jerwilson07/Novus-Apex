@@ -103,9 +103,11 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         }
         recent = [rows[0] for rows in leaders.values()][:3]
         panel = bot.fit_snapshot_panel(leaders, recent)
-        text = "\n".join(item.content for item in panel.walk_children()
-                         if isinstance(item, bot.ui.TextDisplay))
-        self.assertLessEqual(len(text.encode("utf-16-le"))//2, 4000)
+        parts = [item.content for item in panel.walk_children()
+                 if isinstance(item, bot.ui.TextDisplay)]
+        text = "\n".join(parts)
+        # Newlines for asserting across components are not sent to Discord.
+        self.assertLessEqual(sum(len(part.encode("utf-16-le")) // 2 for part in parts), 4000)
         self.assertEqual(text.count(EMOJIS["novuspb1"]), len(bot.RAIDS))
         self.assertEqual(sum(isinstance(item, bot.ui.Section) and item.accessory.label=="NOVUS #1"
                              for item in panel.walk_children()), len(bot.RAIDS))
