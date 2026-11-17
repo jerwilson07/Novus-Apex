@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import bot
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
+from podium_image import PLATES, _base_artwork, render_podium
 from discord.components import _component_factory
 from test_pb_ui import record
 
@@ -95,6 +96,28 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(view.podium_png)
         self.assertIn("<@1>", view.standing_parts[0])
         self.assertIn("<@2>", view.standing_parts[0])
+
+    def test_podium_cache_reuses_png_and_only_nameplate_text_changes(self):
+        rows = [dict(rank=i, member_id=i, points=30-i, firsts=5, seconds=2, thirds=1)
+                for i in range(1, 4)]
+        names = {1: "Alpha", 2: "Bravo", 3: "Charlie"}
+        before = render_podium(rows, names)
+        self.assertIs(render_podium([dict(r) for r in rows], dict(names)), before)
+        rows[0].update(points=100, seconds=12)
+        rows[1].update(points=75, firsts=16, thirds=10)
+        names[2] = "Charlie, new name"
+        after = render_podium(rows, names)
+        self.assertNotEqual(before, after)
+        with Image.open(BytesIO(before)) as prior, Image.open(BytesIO(after)) as next_image:
+            changes = ImageChops.difference(prior.convert("RGB"), next_image.convert("RGB"))
+            self.assertIsNotNone(changes.getbbox())
+            erase = ImageDraw.Draw(changes)
+            _, anchors = _base_artwork()
+            for (x, y, width, _), positions in zip(PLATES, anchors):
+                erase.rectangle((x-width//2, y+13, x+width//2, y+77), fill="black")
+                for tx, ty in positions:
+                    erase.rectangle((tx, ty-15, tx+61, ty+15), fill="black")
+            self.assertIsNone(changes.getbbox())
 
     async def test_clears_alt_only_on_bot_owned_podium_copies(self):
         rows = [dict(rank=i, member_id=i, points=30-i, firsts=5, seconds=2, thirds=1)
