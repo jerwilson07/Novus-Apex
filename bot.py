@@ -567,7 +567,7 @@ class Store:
   rows=await self.all("""SELECT * FROM submissions
   WHERE guild=? AND category='Raids' AND activity=? AND status='approved'
   ORDER BY ms,id""",(g,activity))
-  return unique_team_results(rows,3)
+  return snapshot_top_results(rows)
  async def clear_guild(self,g):
   async with self.lock:
    await self.conn.execute("DELETE FROM submissions WHERE guild=?",(g,))
@@ -961,12 +961,11 @@ async def on_ready():
      ch=bot.get_channel(snapshot["channel"]) or await bot.fetch_channel(snapshot["channel"])
      message=await ch.fetch_message(snapshot["message"])
      snapshot_rows=[await store.raid_top3(guild.id,raid) for raid in RAIDS]
-     expected=tuple(sum(len(results)>=rank for results in snapshot_rows) for rank in range(1,4))
+     expected_badges=sum(bool(results) for results in snapshot_rows)
      all_snapshot_messages=[message,*snapshot_messages[1:]]
-     badges=sum(count_first_place_slots(page,podium_icon(1,guild.id)) for page in all_snapshot_messages)
-     runner_ups=tuple(map(sum,zip(*(count_runner_up_trophies(page,guild.id) for page in all_snapshot_messages))))
-     logging.info("Verified raid snapshot custom trophies and green badges: %s/%s; runner-up trophies=%s expected=%s",
-                  badges,expected[0],runner_ups,expected[1:])
+     badges=sum(count_first_place_slots(page,podium_icon(1,guild.id),heading="")
+                for page in all_snapshot_messages)
+     logging.info("Verified raid snapshot green badges: %s/%s",badges,expected_badges)
      snapshot_text="\n".join(old_announcement_text(page) for page in all_snapshot_messages)
      snapshot_lines=snapshot_text.splitlines()
      logging.info("Verified PB date styling on raid snapshot %s: heavy_check_dates=%s compact_note_present=%s",
@@ -976,6 +975,12 @@ async def on_ready():
                   message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
      logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s",
                   message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)))
+     expected_rows=[snapshot_result_line(row).split(" · [Proof](",1)[0]
+                    for rows in snapshot_rows for row in rows]
+     row_matches=sum(any(line==row or line.startswith(row+" · ") for line in snapshot_lines)
+                     for row in expected_rows)
+     logging.info("Verified compact raid snapshot times and scales on message %s: %s/%s",
+                  message.id,row_matches,len(expected_rows))
     except (discord.HTTPException,aiosqlite.Error):
      logging.exception("Unable to verify the updated raid snapshot")
   logging.info("Verified %s custom first-place boss trophy headings for guild %s",boss_trophies,guild.id)
@@ -1135,6 +1140,30 @@ def snapshot_raid_heading(activity):
  return f"## {activity_icon(activity)}{clean(activity)}"
 
 
+def snapshot_top_results(rows):
+ # One winner per team size, even when that size has multiple modes.
+ def size(r):
+  return team_size("Raids",r["variant"],r["activity"])
+ ordered=sorted(rows,key=lambda r:(r["ms"],size(r) or float("inf"),r["id"]))
+ seen=set()
+ leaders=[]
+ for r in ordered:
+  scale=size(r) or r["variant"]
+  if scale in seen:
+   continue
+  seen.add(scale)
+  leaders.append(r)
+  if len(leaders)==3:
+   break
+ return leaders
+
+
+def snapshot_result_line(r,*,omit=()):
+ proof=proof_text(r,omit=omit)
+ suffix=(f" · {proof}" if proof else f" · PB #{r['id']}" if r["id"] in omit else "")
+ return f"{podium_icon(1,r['guild'])} **{fmt(r['ms'])}** · {clean(r['variant'])}{suffix}"
+
+
 class SnapshotPanel(PBLayoutView):
  def __init__(self,raid_leaders=None,recent=None,*,omit=(),activities=None,show_title=True,include_recent=True):
   super().__init__(timeout=None)
@@ -1150,11 +1179,11 @@ class SnapshotPanel(PBLayoutView):
    if results:
     champion=results[0]
     records.add_item(first_place_section(
-     champion,heading+"\n"+PB_FEATURED_HEADING+short_record(champion,0,include_variant=True,omit=omit),
+     champion,heading+"\n"+snapshot_result_line(champion,omit=omit),
     ))
-    if results[1:]:
+    if results[1:3]:
      records.add_item(ui.TextDisplay("\n".join(
-      short_record(r,k,include_variant=True,omit=omit) for k,r in enumerate(results[1:],1)
+      snapshot_result_line(r,omit=omit) for r in results[1:3]
      )))
    else:
     records.add_item(ui.TextDisplay(heading+"\n-# Be the first to claim this record!"))
@@ -2680,14 +2709,14 @@ class FirstPlaceAnnouncementCard(PBLayoutView):
   self.add_item(panel)
 
 
-def count_first_place_slots(message,icon):
+def count_first_place_slots(message,icon,*,heading=PB_FEATURED_HEADING):
  view=ui.LayoutView.from_message(message)
  return sum(
   isinstance(item,ui.Section)
   and isinstance(item.accessory,ui.Button)
   and item.accessory.label=="NOVUS #1"
   and item.accessory.style==discord.ButtonStyle.success
-  and any(line.startswith(f"{PB_FEATURED_HEADING}{icon} ") for child in item.children
+  and any(line.startswith(f"{heading}{icon} ") for child in item.children
           for line in child.content.splitlines())
   for item in view.walk_children()
  )
