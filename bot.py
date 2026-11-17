@@ -961,13 +961,11 @@ async def on_ready():
      ch=bot.get_channel(snapshot["channel"]) or await bot.fetch_channel(snapshot["channel"])
      message=await ch.fetch_message(snapshot["message"])
      snapshot_rows=[await store.raid_top3(guild.id,raid) for raid in RAIDS]
-     expected=tuple(sum(len(results)>=rank for results in snapshot_rows) for rank in range(1,4))
+     expected_badges=sum(bool(results) for results in snapshot_rows)
      all_snapshot_messages=[message,*snapshot_messages[1:]]
      badges=sum(count_first_place_slots(page,podium_icon(1,guild.id),heading="")
                 for page in all_snapshot_messages)
-     runner_ups=tuple(map(sum,zip(*(count_runner_up_trophies(page,guild.id) for page in all_snapshot_messages))))
-     logging.info("Verified raid snapshot custom trophies and green badges: %s/%s; runner-up trophies=%s expected=%s",
-                  badges,expected[0],runner_ups,expected[1:])
+     logging.info("Verified raid snapshot green badges: %s/%s",badges,expected_badges)
      snapshot_text="\n".join(old_announcement_text(page) for page in all_snapshot_messages)
      snapshot_lines=snapshot_text.splitlines()
      logging.info("Verified PB date styling on raid snapshot %s: heavy_check_dates=%s compact_note_present=%s",
@@ -977,8 +975,8 @@ async def on_ready():
                   message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
      logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s",
                   message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)))
-     expected_rows=[snapshot_result_line(row,rank).split(" · [Proof](",1)[0]
-                    for rows in snapshot_rows for rank,row in enumerate(rows,1)]
+     expected_rows=[snapshot_result_line(row).split(" · [Proof](",1)[0]
+                    for rows in snapshot_rows for row in rows]
      row_matches=sum(any(line==row or line.startswith(row+" · ") for line in snapshot_lines)
                      for row in expected_rows)
      logging.info("Verified compact raid snapshot times and scales on message %s: %s/%s",
@@ -1143,16 +1141,27 @@ def snapshot_raid_heading(activity):
 
 
 def snapshot_top_results(rows):
- # Time determines placement; for equal times, favor the smaller team.
- return unique_team_results(sorted(rows,key=lambda r:(
-  r["ms"],team_size("Raids",r["variant"],r["activity"]) or float("inf"),r["id"],
- )),3)
+ # One winner per team size, even when that size has multiple modes.
+ def size(r):
+  return team_size("Raids",r["variant"],r["activity"])
+ ordered=sorted(rows,key=lambda r:(r["ms"],size(r) or float("inf"),r["id"]))
+ seen=set()
+ leaders=[]
+ for r in ordered:
+  scale=size(r) or r["variant"]
+  if scale in seen:
+   continue
+  seen.add(scale)
+  leaders.append(r)
+  if len(leaders)==3:
+   break
+ return leaders
 
 
-def snapshot_result_line(r,rank,*,omit=()):
+def snapshot_result_line(r,*,omit=()):
  proof=proof_text(r,omit=omit)
  suffix=(f" · {proof}" if proof else f" · PB #{r['id']}" if r["id"] in omit else "")
- return f"{card_rank_icon(rank,r['guild'])} **{fmt(r['ms'])}** · {clean(r['variant'])}{suffix}"
+ return f"{podium_icon(1,r['guild'])} **{fmt(r['ms'])}** · {clean(r['variant'])}{suffix}"
 
 
 class SnapshotPanel(PBLayoutView):
@@ -1170,11 +1179,11 @@ class SnapshotPanel(PBLayoutView):
    if results:
     champion=results[0]
     records.add_item(first_place_section(
-     champion,heading+"\n"+snapshot_result_line(champion,1,omit=omit),
+     champion,heading+"\n"+snapshot_result_line(champion,omit=omit),
     ))
     if results[1:3]:
      records.add_item(ui.TextDisplay("\n".join(
-      snapshot_result_line(r,rank,omit=omit) for rank,r in enumerate(results[1:3],2)
+      snapshot_result_line(r,omit=omit) for r in results[1:3]
      )))
    else:
     records.add_item(ui.TextDisplay(heading+"\n-# Be the first to claim this record!"))
