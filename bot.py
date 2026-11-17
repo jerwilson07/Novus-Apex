@@ -1002,8 +1002,9 @@ async def on_ready():
                   "For compact entries" in snapshot_text)
      logging.info("Verified level-3 raid name headings on snapshot %s: %s/%s",
                   message.id,sum(snapshot_raid_heading(raid) in snapshot_lines for raid in RAIDS),len(RAIDS))
-     logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s",
-                  message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)))
+     logging.info("Verified snapshot proof links on message %s: clickable=%s compact_refs=%s recent_card=%s recent_jump_link=%s",
+                  message.id,snapshot_text.count("[Proof]("),len(re.findall(r" · PB #\d+",snapshot_text)),
+                  "### RECENT PBs" in snapshot_lines,"[Recent PBs ↓](" in snapshot_text)
      expected_rows=[(snapshot_result_line(row).split(" · [Proof](",1)[0],snapshot_team_line(row))
                     for rows in snapshot_rows for row in rows]
      roster_matches=sum(any(
@@ -1612,12 +1613,14 @@ def snapshot_page_plan(leaders,recent):
            [r for rows in selected for r in rows[1:]]),"Raid Snapshot",
    text_limit=PB_PUBLIC_TEXT_LIMIT-(180 if index<len(groups)-1 else 0),
   )
-  plan.append((activities[0] if activities else "Recent PBs",view))
+  # The Recent PBs card is already directly below the raid entries.
+  plan.append((activities[0] if activities else None,view))
  return plan
 
 
-def raid_page_link(label,url):
- return ui.TextDisplay(f"### [{clean(label)} ↓]({url})")
+def add_board_page_link(view,label,url):
+ if label:
+  view.add_item(ui.TextDisplay(f"### [{clean(label)} ↓]({url})"))
 
 
 async def publish_raid_board_pages(channel,g,activity,message,blocks,mentions):
@@ -1646,7 +1649,7 @@ async def publish_board_pages(channel,g,activity,message,plan,mentions):
  for i in reversed(range(len(plan))):
   _,view=plan[i]
   if i<len(plan)-1:
-   view.add_item(raid_page_link(plan[i+1][0],saved[i+1].jump_url))
+   add_board_page_link(view,plan[i+1][0],saved[i+1].jump_url)
   if i or message is not None or len(plan)>1:
    saved[i]=await saved[i].edit(view=view,allowed_mentions=mentions,attachments=[])
  for i,page in tracked.items():
@@ -1965,7 +1968,7 @@ async def publish_public_board_tail(channel,g,tail,roots,pages,home):
     messages.append(msg)
     staged.append(msg)
    for i,(_,view) in enumerate(plan[:-1]):
-    view.add_item(raid_page_link(plan[i+1][0],messages[i+1].jump_url))
+    add_board_page_link(view,plan[i+1][0],messages[i+1].jump_url)
     await messages[i].edit(view=view,allowed_mentions=mentions)
    replacements[key]=[msg.id for msg in messages]
   replaced=set(tail)
