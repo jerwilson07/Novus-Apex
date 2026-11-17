@@ -78,14 +78,21 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             for fallback in ("🏆", "🥈", "🥉"):
                 self.assertNotIn(fallback, text)
 
-    def test_novus_boss_does_not_fall_back_to_gold_trophy(self):
+    def test_novus_trophy_ids_override_stale_emoji_cache(self):
         guild = bot.NOVUS_GUILD_ID
-        row = record(guild=guild, category="Bosses", activity="Vorkath", variant="Standard")
-        view = bot.BossLeaderboard("Vorkath", [("Standard", [row])])
-        self.assertNotIn("🏆", str(view.to_components()))
+        expected = (
+            "<:novuspb1:1572156661827641374>",
+            "<:novuspb2:1572155458423361637>",
+            "<:novuspb3:1572155471606054982>",
+        )
         with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild: EMOJIS}):
-            view = bot.BossLeaderboard("Vorkath", [("Standard", [row])])
-            self.assertIn(EMOJIS["novuspb1"], str(view.to_components()))
+            self.assertEqual(tuple(bot.podium_icon(rank, guild) for rank in (1, 2, 3)), expected)
+            rows = [record(id=i, guild=guild, category="Bosses", activity="Vorkath",
+                           variant="Standard", member_ids=str(i), ms=1000*i) for i in (1, 2, 3)]
+            view = bot.BossLeaderboard("Vorkath", [("Standard", rows)])
+            content = str(view.to_components())
+            self.assertTrue(all(emoji in content for emoji in expected))
+            self.assertTrue(all(emoji not in content for emoji in EMOJIS.values()))
 
     def test_snapshot_keeps_all_raid_champions_and_badges_with_long_links(self):
         leaders = {
@@ -114,6 +121,10 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         original = "## 🏆 NEW NOVUS #1\n-# PB TIME\n## 🏆 other"
         expected = f"## {EMOJIS['novuspb1']} NEW NOVUS #1\n-# PB TIME\n## 🏆 other"
         self.assertEqual(bot.replace_first_trophy_heading(original, EMOJIS["novuspb1"]), expected)
+        older = "## <:novuspb1:1> NEW NOVUS #1\n## <:novuspb2:2> other"
+        new = f"## {EMOJIS['novuspb1']} NEW NOVUS #1\n## <:novuspb2:2> other"
+        self.assertEqual(bot.replace_first_trophy_heading(older, EMOJIS["novuspb1"]), new)
+        self.assertEqual(bot.replace_first_trophy_heading(new, EMOJIS["novuspb1"]), new)
 
     async def test_existing_announcement_edit_keeps_proof_and_controls(self):
         row = record(guild=123, proof=f"archive:{1:032x}.png")
