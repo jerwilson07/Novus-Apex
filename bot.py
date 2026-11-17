@@ -351,7 +351,11 @@ def parse_ms(s):
 def fmt(ms):
  s,m=divmod(ms,1000); minute,sec=divmod(s,60); hour,minute=divmod(minute,60)
  cs=m//10
- return f"{hour}:{minute:02}:{sec:02}.{cs:02}" if hour else f"{minute}:{sec:02}.{cs:02}"
+ if hour:
+  return f"{hour}:{minute:02}:{sec:02}.{cs:02}"
+ if minute:
+  return f"{minute}:{sec:02}.{cs:02}"
+ return f"{sec:02}.{cs:02}"
 
 def proof_looks_like_media(url):
  try:
@@ -2984,6 +2988,14 @@ async def refresh_first_announcement_trophy_icons(guild_id):
   logging.exception("Could not refresh existing #1 announcement trophy icons")
 
 
+def announcement_time_matches(text,ms):
+ time=fmt(ms)
+ headings={f"## {time}"}
+ if ms<60000:
+  headings.add(f"## 0:{time}")
+ return any(line.rstrip() in headings for line in text.splitlines())
+
+
 def match_legacy_first_post(message,approved):
  """Only accept an unambiguously matched, old-style Novus #1 card."""
  text=old_announcement_text(message)
@@ -2993,7 +3005,7 @@ def match_legacy_first_post(message,approved):
  for record in approved:
   if (
    f"**{clean(record['activity'])} · {clean(record['variant'])}**" in text
-   and f"## {fmt(record['ms'])}" in text
+   and announcement_time_matches(text,record["ms"])
    and public_members(record) in text
    and f"PB achieved {pb_date_label(record['pb_date'])}" in text
   ):
@@ -3101,7 +3113,7 @@ def matches_first_announcement(message,record):
  return all((
   "NEW NOVUS #1" in body,
   f"**{clean(record['activity'])} · {clean(record['variant'])}**" in body,
-  f"## {fmt(record['ms'])}" in body,
+  announcement_time_matches(body,record["ms"]),
   public_members(record) in body,
  ))
 
