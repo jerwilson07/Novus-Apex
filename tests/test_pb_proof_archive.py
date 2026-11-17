@@ -258,7 +258,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         activity = "The Fractured Archive"
         blocks = [
             (scale, [record(id=n + 1, activity=activity, variant=scale,
-                            proof="https://example.com/" + "a" * 1800)])
+                            proof="https://example.com/" + "a" * 1650)])
             for n, scale in enumerate(("Duo", "Trio", "5-Man"))
         ]
         main = SimpleNamespace(id=10, jump_url="https://discord.com/channels/123/456/10")
@@ -284,6 +284,27 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
                       if isinstance(item, bot.ui.TextDisplay)]
         self.assertIn("### 5-Man", extra_text)
         self.assertFalse(any(activity in item for item in extra_text))
+
+    async def test_snapshot_overflow_keeps_blue_links_on_every_entry(self):
+        proof = "https://example.com/" + "a" * 950
+        leaders = {
+            activity: [record(id=n * 4 + k, activity=activity, proof=proof)
+                       for k in range(1, 4)]
+            for n, activity in enumerate(bot.RAIDS)
+        }
+        recent = [record(id=20 + k, proof=proof) for k in range(3)]
+        pages = bot.snapshot_page_plan(leaders, recent)
+        self.assertGreater(len(pages), 1)
+        for i, (_, view) in enumerate(pages):
+            if i + 1 < len(pages):
+                view.add_item(bot.raid_page_link(pages[i + 1][0],
+                                               "https://discord.com/channels/123/456/789"))
+            self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
+        text = "\n".join(item.content for _, view in pages for item in view.walk_children()
+                         if isinstance(item, bot.ui.TextDisplay))
+        self.assertEqual(text.count(f"[Proof]({proof})"), 15)
+        self.assertEqual(text.count("### RAID SNAPSHOT"), 1)
+        self.assertNotIn(" · PB #", text)
 
     async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
         ref = "archive:" + "c" * 32 + ".png"
