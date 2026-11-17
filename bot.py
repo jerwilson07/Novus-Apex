@@ -900,22 +900,27 @@ async def on_ready():
     live_parts=list(ui.LayoutView.from_message(confirmed).walk_children())
     # Discord may return gallery uploads only as component media, not in
     # message.attachments. Verify against that media rather than the file list.
-    podium_media=next((tile.media for item in live_parts if isinstance(item,ui.MediaGallery)
-                       for tile in item.items if tile.description and tile.description==view.podium_description),None)
-    podium_embedded=podium_media is not None
+    podium_tile=next((tile for item in live_parts if isinstance(item,ui.MediaGallery)
+                      for tile in item.items
+                      if urlparse(tile.media.url).path.rsplit("/",1)[-1]==PODIUM_FILENAME),None)
     podium_uploaded=False
-    if podium_media is not None:
+    if podium_tile is not None:
      try:
-      downloaded=await asyncio.wait_for(podium_media.read(),timeout=8)
-      podium_uploaded=downloaded==view.podium_png
+      # Media parsed from message components does not carry a client state.
+      url=podium_tile.media.url
+      location=urlparse(url)
+      if location.scheme=="https" and location.hostname=="cdn.discordapp.com":
+       downloaded=await asyncio.wait_for(bot.http.get_from_cdn(url),timeout=8)
+       podium_uploaded=downloaded==view.podium_png
      except (discord.DiscordException,aiohttp.ClientError,TimeoutError):
       logging.warning("Unable to read the published PB podium image",exc_info=True)
     dividers=sum(isinstance(item,ui.Separator) for item in live_parts)
     podium_divider=dividers==3
     logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s podium divider=%s",
                  message.id,ranks,matches_ranked_rows,podium_divider)
-    logging.info("Verified overall PB Top 10 on message %s: podium image uploaded=%s embedded=%s numbered ranks=%s indented trophy counts=%s scoring footer=%s single heading=%s",
-                 message.id,podium_uploaded,podium_embedded,numbered_rows,muted_breakdowns,scoring_footer,single_heading)
+    logging.info("Verified overall PB Top 10 on message %s: podium image uploaded=%s embedded=%s alt text present=%s numbered ranks=%s indented trophy counts=%s scoring footer=%s single heading=%s",
+                 message.id,podium_uploaded,podium_tile is not None,bool(podium_tile and podium_tile.description),
+                 numbered_rows,muted_breakdowns,scoring_footer,single_heading)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
@@ -1149,7 +1154,7 @@ class Home(PBLayoutView):
  def __init__(self,points=None,*,guild_id=None,podium=None):
   super().__init__(timeout=None)
   points=points or []
-  self.podium_png,self.podium_description=podium or (None,None)
+  self.podium_png=podium
   self.standing_parts=top10_standings_parts(points,guild_id)
 
   hero=ui.Container(accent_colour=GOLD)
@@ -1160,7 +1165,7 @@ class Home(PBLayoutView):
   hero.add_item(ui.Separator())
   if self.podium_png is not None:
    gallery=ui.MediaGallery()
-   gallery.add_item(media=f"attachment://{PODIUM_FILENAME}",description=self.podium_description)
+   gallery.add_item(media=f"attachment://{PODIUM_FILENAME}")
    hero.add_item(gallery)
    hero.add_item(ui.Separator())
    # Use the existing formatted ranks 4 through 10 verbatim. When there are

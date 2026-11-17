@@ -70,8 +70,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         panel = view.children[0]
         self.assertIsInstance(panel.children[3], bot.ui.MediaGallery)
         self.assertTrue(panel.children[3].items[0].media.url.endswith(bot.PODIUM_FILENAME))
-        self.assertIn("#1 Alpha, 29 points. Trophies: 5 first, 2 second, 1 third.", view.podium_description)
-        self.assertIn("#3 Charlie, 27 points.", view.podium_description)
+        self.assertIsNone(panel.children[3].items[0].description)
         self.assertNotIn("## <:pb1:", "\n".join(view.standing_parts))
         self.assertEqual(panel.children[-1].to_component_dict(), before.children[0].children[-1].to_component_dict())
         with Image.open(BytesIO(view.podium_png)) as preview:

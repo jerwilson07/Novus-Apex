@@ -37,17 +37,15 @@ def fit_name(draw, name, width):
 
 
 def render_podium(entries, names):
-    """Return a PNG and alt text from three unambiguously ranked players."""
+    """Return a PNG from three unambiguously ranked players."""
     if [row["rank"] for row in entries] != [1, 2, 3]:
         raise ValueError("A visual podium requires one player per placement")
     with Image.open(ASSETS / "stage.webp") as art, Image.open(ASSETS / "trophy-icons.png") as icons:
         image = art.convert("RGBA")
         glyphs = [icons.crop((i * 40, 0, (i + 1) * 40, 48)) for i in range(3)]
     draw = ImageDraw.Draw(image)
-    descriptions = []
     for entry, (x, y, width, accent) in zip(entries, PLATES):
-        original_name = names[entry["member_id"]]
-        name, face = fit_name(draw, original_name, width - 38)
+        name, face = fit_name(draw, names[entry["member_id"]], width - 38)
         draw.text((x, y + 32), name, font=face, anchor="mm", fill="#f8f4ff")
         draw.text((x, y + 62), f"{entry['points']} PTS", font=font(26), anchor="mm", fill=accent)
 
@@ -63,10 +61,6 @@ def render_podium(entries, names):
             image.alpha_composite(glyph, (left, y + 75))
             draw.text((left + 40, y + 99), label, font=count_font, anchor="lm", fill=color)
             left += slot_width + gap
-        descriptions.append(
-            f"#{entry['rank']} {original_name}, {entry['points']} points. "
-            f"Trophies: {counts[0]} first, {counts[1]} second, {counts[2]} third."
-        )
     output = BytesIO()
     image.save(output, format="PNG")
-    return output.getvalue(), " ".join(descriptions)
+    return output.getvalue()
