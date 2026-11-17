@@ -15,49 +15,56 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patch.stopall)
         patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: EMOJIS}, clear=True).start()
 
-    def test_top10_uses_large_trophy_art_for_only_first_three(self):
-        points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
+    def test_top10_uses_inline_trophies_and_muted_counts(self):
+        points = [dict(rank=i, member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
                   for i in range(1, 11)]
         view = bot.Home(points, guild_id=123)
-        sections = [item for item in view.walk_children() if isinstance(item, bot.ui.Section)]
-        self.assertEqual(len(sections), 3)
-        for rank, section in enumerate(sections, 1):
-            self.assertIsInstance(section.accessory, bot.ui.Thumbnail)
-            self.assertEqual(section.accessory.media.url,
-                             f"https://cdn.discordapp.com/emojis/{123456789123456780+rank}.png?size=128")
-            self.assertTrue(section.children[0].content.startswith(f"### {rank}. <@{rank}>"))
-        standings = "\n".join(item.content for item in view.walk_children()
+        components = list(view.walk_children())
+        self.assertFalse(any(isinstance(item, bot.ui.Section) for item in components))
+        standings = "\n".join(item.content for item in components
                               if isinstance(item, bot.ui.TextDisplay))
+        for rank in range(1, 4):
+            self.assertIn(f"### {EMOJIS[f'novuspb{rank}']} <@{rank}>", standings)
         for rank in range(4, 11):
             self.assertIn(f"**{rank}.** <@{rank}>", standings)
-        self.assertEqual(standings.count("*(1 first · 0 second · 0 third)*"), 10)
-        self.assertTrue(standings.endswith("-# *1st = 5 pts · 2nd = 3 pts · 3rd = 1 pt*"))
+        counts = f"-# *{EMOJIS['novuspb1']} × 1 · {EMOJIS['novuspb2']} × 0 · {EMOJIS['novuspb3']} × 0*"
+        self.assertEqual(standings.count(counts), 10)
+        legend = f"-# *Scoring · {EMOJIS['novuspb1']} +5 pts · {EMOJIS['novuspb2']} +3 pts · {EMOJIS['novuspb3']} +1 pt*"
+        self.assertTrue(standings.endswith(legend))
         self.assertLessEqual(len(view.children[0].children), 10)
 
     def test_missing_trophy_keeps_the_podium_order(self):
-        points = [dict(member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
+        points = [dict(rank=i, member_id=i, points=11-i, firsts=1, seconds=0, thirds=0)
                   for i in range(1, 4)]
         with patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: {"novuspb2": EMOJIS["novuspb2"]}}):
-            view = bot.Home(points, guild_id=123)
-        lines = [item.content for item in view.walk_children()
-                 if isinstance(item, bot.ui.TextDisplay) and "<@" in item.content]
+            lines = bot.top10_standings_text(points, 123).splitlines()
         self.assertTrue(lines[0].startswith("### #1 <@1>"))
-        self.assertTrue(lines[1].startswith("### 2. <@2>"))
-        self.assertTrue(lines[2].startswith("### 🥉 <@3>"))
-        self.assertIsNone(bot.podium_trophy_url(4, 123))
+        self.assertTrue(lines[2].startswith(f"### {EMOJIS['novuspb2']} <@2>"))
+        self.assertTrue(lines[4].startswith("### #3 <@3>"))
 
-    def test_boss_and_raid_champions_use_custom_icon_without_changing_lower_ranks(self):
+    def test_exact_ties_share_ranks_and_keep_cutoff_ties(self):
+        def score(member_id, firsts):
+            return dict(member_id=member_id, firsts=firsts, seconds=0,
+                        thirds=0, points=firsts*5)
+        entries = [score(i, 15-i) for i in range(1, 11)]
+        entries += [score(20, 14), score(21, 6), score(22, 6), score(23, 5)]
+        points = bot.rank_pb_points(entries)
+        self.assertEqual([p["rank"] for p in points], [1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10])
+        text = bot.top10_standings_text(points, 123)
+        self.assertEqual(text.count(f"### {EMOJIS['novuspb1']} <@"), 2)
+        self.assertEqual(text.count("**10.**"), 3)
+        self.assertNotIn("<@23>", text)
+
+    def test_boss_and_raid_use_all_custom_podium_icons(self):
         items = [record(id=i, member_ids=str(i), ms=1000*i) for i in range(1, 4)]
         blocks = [("Standard", items)]
-        boss = str(bot.BossLeaderboard("Araxxor", blocks).to_components())
-        raid = str(bot.RaidLeaderboard("Chambers of Xeric", blocks).to_components())
-        self.assertIn(EMOJIS["novuspb1"], boss)
-        self.assertNotIn(EMOJIS["novuspb2"], boss)
-        self.assertNotIn(EMOJIS["novuspb3"], boss)
-        self.assertIn("🥈", boss)
-        self.assertIn("🥉", boss)
-        self.assertNotIn("🏆", raid)
-        self.assertIn(EMOJIS["novuspb1"], raid)
+        for view in (bot.BossLeaderboard("Araxxor", blocks),
+                     bot.RaidLeaderboard("Chambers of Xeric", blocks)):
+            text = str(view.to_components())
+            for emoji in EMOJIS.values():
+                self.assertIn(emoji, text)
+            for fallback in ("🏆", "🥈", "🥉"):
+                self.assertNotIn(fallback, text)
 
     def test_novus_boss_does_not_fall_back_to_gold_trophy(self):
         guild = bot.NOVUS_GUILD_ID

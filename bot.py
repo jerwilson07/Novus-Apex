@@ -6,13 +6,14 @@ import aiohttp, discord, aiosqlite
 from discord import app_commands, ui
 from discord.ext import commands
 from dotenv import load_dotenv
+from novus_logging import (LoggedCommandTree, LoggedModal, LoggedView, configure_logging,
+                           report_interaction_error, start_logged_task)
 from proof_archive import (
  ProofUnavailable, archive_discord_proof, archive_path,
  attachment_candidates, discord_attachment_key, is_private_proof,
 )
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
 TOKEN=os.getenv("DISCORD_TOKEN","")
 GUILD_ID=int(os.getenv("GUILD_ID","0"))
 NOVUS_GUILD_ID=1532817291048124466
@@ -564,7 +565,12 @@ class PB(commands.Bot):
    task.cancel()
    await asyncio.gather(task,return_exceptions=True)
   await super().close()
-bot=PB(command_prefix=commands.when_mentioned,intents=intents)
+bot=PB(command_prefix=commands.when_mentioned,intents=intents,tree_cls=LoggedCommandTree)
+
+
+class PBLayoutView(ui.LayoutView):
+ async def on_error(self,interaction,error,item):
+  report_interaction_error(interaction,error,f"{type(self).__name__}.{type(item).__name__}")
 
 def pb_points_order(entry):
  return (-entry["points"],-entry["firsts"],-entry["seconds"],-entry["thirds"])
@@ -674,7 +680,7 @@ def build_member_profile(rows,member_id):
  }
 
 
-class PersonalPBProfile(ui.LayoutView):
+class PersonalPBProfile(PBLayoutView):
  """Private Discord-only view of the member's standings and approved history."""
  def __init__(self,member_id,summary,*,guild_id=None):
   super().__init__(timeout=900)
@@ -762,21 +768,21 @@ async def on_ready():
  # One-time update of the two previously posted #1 cards, without reposting.
  if not getattr(bot,"_first_card_retrofit_started",False):
   bot._first_card_retrofit_started=True
-  asyncio.create_task(retrofit_existing_first_announcements())
+  start_logged_task(retrofit_existing_first_announcements(),name="pb-announcement-retrofit")
  # Remove proof previews from two existing #1 general-chat announcements in place.
  if not getattr(bot,"_first_no_gallery_retrofit_started",False):
   bot._first_no_gallery_retrofit_started=True
-  asyncio.create_task(remove_existing_first_announcement_galleries())
+  start_logged_task(remove_existing_first_announcement_galleries(),name="pb-announcement-gallery-cleanup")
  # Retrieve actual emoji IDs, then update existing leaderboard messages in place.
  for guild in bot.guilds:
   await fetch_activity_emojis(guild)
   loaded=[n for n in range(1,4) if podium_icon(n,guild.id)!=PB_PODIUM_FALLBACK[n]]
   logging.info("Resolved Novus PB podium emojis for guild %s: %s",guild.id,loaded)
   if 1 in loaded and (guild.id==NOVUS_GUILD_ID or guild.id==GUILD_ID):
-   asyncio.create_task(refresh_first_announcement_trophy_icons(guild.id))
+   start_logged_task(refresh_first_announcement_trophy_icons(guild.id),name="pb-announcement-trophies")
   await resolve_royal_titans_35_partner(guild)
   if guild.id==NOVUS_GUILD_ID:
-   asyncio.create_task(refresh_royal_titans_35_review_once())
+   start_logged_task(refresh_royal_titans_35_review_once(),name="pb-royal-titans-review")
   records=await store.boss_boards(guild.id)
   jump_links={r["activity"]:f"https://discord.com/channels/{guild.id}/{r['channel']}/{r['message']}" for r in records}
   directory=await store.boss_panel(guild.id)
@@ -911,7 +917,7 @@ async def on_ready():
     logging.exception("Could not read PB staff cards for migration")
 
  if not getattr(bot,"_proof_links_task",None):
-  bot._proof_links_task=asyncio.create_task(refresh_live_proof_links())
+  bot._proof_links_task=start_logged_task(refresh_live_proof_links(),name="pb-proof-refresh")
 
  # Update the tracked message in place after the animated asset deploys.
  # Do not delete/repost the board or alter its other panels.
@@ -937,7 +943,7 @@ def is_council_or_founder(i):
  allowed={"council","founder"}
  return any(role.name.casefold() in allowed for role in i.user.roles)
 
-class RulesModal(ui.Modal,title="NOVUS | PB Rules"):
+class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
  def __init__(self):
   super().__init__(timeout=300)
   self.add_item(ui.TextDisplay(
@@ -996,7 +1002,7 @@ def top10_standings_text(points,guild_id):
  return content
 
 
-class Home(ui.LayoutView):
+class Home(PBLayoutView):
  def __init__(self,points=None,*,guild_id=None):
   super().__init__(timeout=None)
   points=points or []
@@ -1045,7 +1051,7 @@ class Home(ui.LayoutView):
   return cls(await calculate_pb_points(g),guild_id=g)
 
 
-class SnapshotPanel(ui.LayoutView):
+class SnapshotPanel(PBLayoutView):
  def __init__(self,raid_leaders=None,recent=None,*,omit=()):
   super().__init__(timeout=None)
   raid_leaders=raid_leaders or {}
@@ -1123,7 +1129,7 @@ def fit_snapshot_panel(leaders,recent):
  return panel
 
 
-class BossDirectory(ui.LayoutView):
+class BossDirectory(PBLayoutView):
  def __init__(self,jump_links=None):
   super().__init__(timeout=None)
   jump_links=jump_links or {}
@@ -1255,7 +1261,7 @@ def board_proof_rows(blocks,*,force_menu=False):
  ],len(chunks))) for index,chunk in enumerate(chunks)]
 
 
-class BossLeaderboard(ui.LayoutView):
+class BossLeaderboard(PBLayoutView):
  def __init__(self,activity,blocks):
   super().__init__(timeout=None)
 
@@ -1296,7 +1302,7 @@ class BossLeaderboard(ui.LayoutView):
   return cls(activity,await cls.blocks(g,activity))
 
 
-class RaidLeaderboard(ui.LayoutView):
+class RaidLeaderboard(PBLayoutView):
  def __init__(self,activity,blocks,*,omit=()):
   super().__init__(timeout=None)
 
@@ -1647,7 +1653,7 @@ async def refresh_live_proof_links():
     logging.exception("Unable to read PB snapshot or staff cards for %s",guild.id)
 
 
-class RaidBrowser(ui.LayoutView):
+class RaidBrowser(PBLayoutView):
  def __init__(self,g,raid_index,variant_index,results):
   super().__init__(timeout=900)
   self.g=g
@@ -1750,7 +1756,7 @@ class RaidBrowser(ui.LayoutView):
   return cls(g,raid_index,variant_index,results)
 
 
-class Browser(ui.LayoutView):
+class Browser(PBLayoutView):
  def __init__(self,g,cat,index,blocks):
   super().__init__(timeout=900)
   self.g=g
@@ -1907,7 +1913,7 @@ async def refresh_royal_titans_35_review_once():
   logging.exception("Unexpected Royal Titans #35 review refresh error")
 
 
-class Review(ui.LayoutView):
+class Review(PBLayoutView):
  def __init__(self,r,leader=None,placement=None,*,archived_filename=None):
   active=r["status"] in ("pending","awaiting_proof")
   super().__init__(timeout=None if active else 60)
@@ -2083,7 +2089,9 @@ async def update_review(r):
   ch=bot.get_channel(r["review_channel"]) or await bot.fetch_channel(r["review_channel"])
   msg=await ch.fetch_message(r["review_message"])
   await msg.edit(view=await Review.make(r),allowed_mentions=discord.AllowedMentions.none())
- except discord.HTTPException:logging.exception("Unable to update review")
+ except discord.HTTPException:
+  logging.exception("Unable to update review | guild_id=%s submission_id=%s message_id=%s",
+                    r["guild"],r["id"],r["review_message"])
 
 
 async def recover_discord_proof(record,session):
@@ -2096,8 +2104,11 @@ async def recover_discord_proof(record,session):
    channel=bot.get_channel(record["review_channel"]) or await bot.fetch_channel(record["review_channel"])
    message=await channel.fetch_message(record["review_message"])
    candidates.extend(attachment_candidates(message,original))
-  except discord.HTTPException:
+  except discord.NotFound:
    pass
+  except discord.HTTPException as exc:
+   logging.warning("Could not read review for proof recovery | submission_id=%s status=%s code=%s",
+                   record["id"],exc.status,exc.code)
  for url in dict.fromkeys([*candidates,original]):
   try:
    return await archive_discord_proof(DBPATH,session,url)
@@ -2270,7 +2281,7 @@ class BoardProofSelect(ui.DynamicItem[ui.Select],template=r"pb:proof:pick:(?P<pa
   await show_record_proof(i,int(values[0]))
 
 
-class BoardProofModal(ui.Modal,title="View PB Proof"):
+class BoardProofModal(LoggedModal,title="View PB Proof"):
  def __init__(self):
   super().__init__(timeout=300)
   self.number=ui.TextInput(label="PB submission number",max_length=19,placeholder="Number shown next to the PB")
@@ -2376,7 +2387,7 @@ def first_place_announcement(r, previous_leader, leaderboard_url=None):
 
 
 
-class FirstPlaceAnnouncementCard(ui.LayoutView):
+class FirstPlaceAnnouncementCard(PBLayoutView):
  """Public #1 milestone, styled after the staff review card."""
  def __init__(self,record,previous_leader=None,leaderboard_url=None):
   super().__init__(timeout=900)
@@ -2813,7 +2824,7 @@ async def decide(i,sid,choice):
    await user.send(f"Your Novus PB #{sid} needs proof. Use /pbproof with submission_id {sid} in the Novus server.")
   except discord.HTTPException:logging.warning("Unable to DM submission owner")
 
-class ProofUploadModal(ui.Modal,title="NOVUS | PB Proof"):
+class ProofUploadModal(LoggedModal,title="NOVUS | PB Proof"):
  def __init__(self,sid):
   super().__init__(timeout=300)
   self.sid=sid
@@ -2849,7 +2860,7 @@ class ProofUploadModal(ui.Modal,title="NOVUS | PB Proof"):
   await save_interaction_proof(i,r,attachment.url)
 
 
-class ProofUploadView(ui.View):
+class ProofUploadView(LoggedView):
  def __init__(self,sid):
   super().__init__(timeout=900)
   self.sid=sid
@@ -2995,7 +3006,7 @@ def parse_submission_details(raw):
  time_value,pb_date=match.groups()
  return pb_date,time_value
 
-class SubmitModal(ui.Modal,title="NOVUS | PB Submission"):
+class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
  def __init__(self):
   super().__init__(timeout=300)
 
@@ -3164,8 +3175,11 @@ async def pbclear(i:discord.Interaction):
    msg=await ch.fetch_message(r["review_message"])
    await msg.delete()
    deleted_cards+=1
-  except discord.HTTPException:
+  except discord.NotFound:
    pass
+  except discord.HTTPException as exc:
+   logging.warning("Could not delete an old PB card | guild_id=%s message_id=%s status=%s code=%s",
+                   i.guild_id,r["review_message"],exc.status,exc.code)
 
  await store.clear_guild(i.guild_id)
  await refresh_panel(i.guild_id)
@@ -3267,8 +3281,11 @@ async def pbpanel(i:discord.Interaction):
    ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
    msg=await ch.fetch_message(record["message"])
    await msg.delete()
-  except discord.HTTPException:
+  except discord.NotFound:
    pass
+  except discord.HTTPException as exc:
+   logging.warning("Could not delete an old PB card | guild_id=%s message_id=%s status=%s code=%s",
+                   i.guild_id,record["message"],exc.status,exc.code)
 
  await store.clear_boss_boards(i.guild_id)
 
@@ -3355,6 +3372,7 @@ async def pbpanel(i:discord.Interaction):
   )
 
 if __name__=="__main__":
+ configure_logging("Novus PB Board")
  if not TOKEN:raise RuntimeError("DISCORD_TOKEN environment variable is required")
  if not REVIEW_ID:raise RuntimeError("REVIEW_CHANNEL_ID environment variable is required")
- bot.run(TOKEN)
+ bot.run(TOKEN,log_handler=None)

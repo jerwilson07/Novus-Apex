@@ -31,9 +31,19 @@ class RaidSizeTests(unittest.TestCase):
                     for i, variant in enumerate(variants, 1)
                 ])
                 self.assertLessEqual(board.total_children_count, 40)
-                self.assertEqual(len(board.children), len(variants) + 1)
-                for panel, variant in zip(board.children[1:], variants):
-                    self.assertEqual(panel.children[0].content, f"### {variant}")
+                displays = [item.content for item in board.walk_children()
+                            if isinstance(item, bot.ui.TextDisplay)]
+                heading_lines = [line for block in displays for line in block.splitlines()]
+                self.assertIn(f"## {activity}", heading_lines)
+                self.assertEqual(
+                    [line.removeprefix("### ") for line in heading_lines if line.startswith("### ")],
+                    variants,
+                )
+                self.assertEqual(
+                    sum(isinstance(item, bot.ui.Section) and item.accessory.label == "NOVUS #1"
+                        for item in board.walk_children()),
+                    len(variants),
+                )
 
 
 class RaidSizeMigrationTests(unittest.IsolatedAsyncioTestCase):

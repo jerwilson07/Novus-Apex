@@ -15,11 +15,11 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
     def test_home_panel_includes_banner_top_ten_and_three_buttons(self):
         points = [
             {
-                "member_id": 123, "points": 20,
+                "rank": 1, "member_id": 123, "points": 20,
                 "firsts": 2, "seconds": 3, "thirds": 1,
             },
             {
-                "member_id": 456, "points": 8,
+                "rank": 2, "member_id": 456, "points": 8,
                 "firsts": 1, "seconds": 1, "thirds": 0,
             },
         ]
@@ -36,7 +36,7 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("### TOP 10", text)
         self.assertNotIn("PERSONAL BESTS", text)
         self.assertIn("#1 <@123> · **20 pts**", text)
-        self.assertIn("🥈 <@456> · **8 pts**", text)
+        self.assertIn("#2 <@456> · **8 pts**", text)
         actions = [
             child for child in panel.children
             if isinstance(child, bot.ui.ActionRow)
@@ -52,7 +52,7 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(id=100, jump_url="https://discord.com/channels/123/456/100")
         channel = SimpleNamespace(send=AsyncMock(return_value=message))
         points = [
-            {"member_id": 123, "points": 5, "firsts": 1, "seconds": 0, "thirds": 0}
+            {"rank": 1, "member_id": 123, "points": 5, "firsts": 1, "seconds": 0, "thirds": 0}
         ]
         current = bot.Home(points, guild_id=123)
         with (

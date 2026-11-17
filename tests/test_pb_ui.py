@@ -184,7 +184,7 @@ class PBLayoutTests(unittest.TestCase):
         self.assertTrue(any("Awakened" in item for item in headings))
 
     def test_first_place_always_uses_trophy(self):
-        self.assertEqual(bot.MEDALS[0], "#1")
+        self.assertEqual(bot.podium_icon(1, 123), "#1")
         self.assertNotIn("🥇", bot.short_record(record(), 0))
         self.assertIn("#1", bot.short_record(record(), 0))
         board = bot.BossLeaderboard(
@@ -192,7 +192,7 @@ class PBLayoutTests(unittest.TestCase):
         )
         champion = next(child for child in board.children[0].children
                         if isinstance(child, bot.ui.Section))
-        self.assertIn("## #1 ", champion.children[0].content)
+        self.assertIn("# #1 ", champion.children[0].content)
         self.assertEqual(champion.accessory.label, "NOVUS #1")
         self.assertTrue(champion.accessory.disabled)
         self.assertEqual(champion.accessory.style, bot.discord.ButtonStyle.success)
@@ -262,7 +262,7 @@ class PBLayoutTests(unittest.TestCase):
         )
         components = board.children[0].children
         section = next(x for x in components if isinstance(x, bot.ui.Section))
-        self.assertIn("## #1 ", section.children[0].content)
+        self.assertIn("# #1 ", section.children[0].content)
         self.assertIn("November 8, 2026", section.children[0].content)
         self.assertEqual(section.accessory.label, "NOVUS #1")
         self.assertTrue(section.accessory.disabled)
