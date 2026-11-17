@@ -248,7 +248,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(len(list(view.walk_children())), 40)
         text = "\n".join(item.content for _, view in pages for item in view.walk_children()
                          if isinstance(item, bot.ui.TextDisplay))
-        self.assertEqual(text.count("0:05.00"), len(blocks))
+        self.assertEqual(text.count("**05.00**"), len(blocks))
         self.assertEqual(text.count(f"[Proof]({url})"), len(blocks) * 5)
         self.assertEqual(text.count(f"## {activity}"), 1)
         self.assertNotIn(" · PB #", text)
