@@ -94,7 +94,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(emoji in content for emoji in expected))
             self.assertTrue(all(emoji not in content for emoji in EMOJIS.values()))
 
-    def test_snapshot_keeps_all_raid_champions_and_badges_with_long_links(self):
+    def test_snapshot_keeps_all_raid_champions_and_rosters_with_long_links(self):
         leaders = {
             activity: [record(id=10*j+k+1, guild=123, activity=activity,
                               ms=1000*(k+1), proof="https://example.org/"+"a"*390)
@@ -109,8 +109,9 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         # Newlines for asserting across components are not sent to Discord.
         self.assertLessEqual(sum(len(part.encode("utf-16-le")) // 2 for part in parts), 4000)
         self.assertEqual(text.count(EMOJIS["novuspb1"]), sum(map(len, leaders.values())))
-        self.assertEqual(sum(isinstance(item, bot.ui.Section) and item.accessory.label=="NOVUS #1"
-                             for item in panel.walk_children()), len(bot.RAIDS))
+        self.assertFalse(any(isinstance(item, bot.ui.Button) for item in panel.walk_children()))
+        self.assertEqual(text.splitlines().count(bot.snapshot_team_line(recent[0])),
+                         sum(map(len, leaders.values())))
         self.assertNotIn("🏆", text)
         self.assertIn("0:03.00", text)
 

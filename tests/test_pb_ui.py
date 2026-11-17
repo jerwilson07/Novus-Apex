@@ -284,7 +284,7 @@ class PBLayoutTests(unittest.TestCase):
                 self.assertIn(f"## {bot.activity_icon(raid)}{raid}", text.splitlines())
         self.assertIn("-# Be the first to claim this record!", text)
 
-    def test_snapshot_lists_one_winner_per_scale_with_time_and_proof_only(self):
+    def test_snapshot_lists_one_winner_per_scale_with_team_and_proof(self):
         activity = "The Fractured Archive"
         fastest = record(id=10, ms=60000, variant="5-Man", member_ids="1,2,3,4,5")
         large_tie = record(id=11, ms=70000, variant="4-Man", member_ids="6,7,8,9")
@@ -303,7 +303,14 @@ class PBLayoutTests(unittest.TestCase):
             "#1 **1:10.00** · Duo · [Proof](https://example.com/proof.png)",
             "#1 **1:10.00** · 4-Man · [Proof](https://example.com/proof.png)",
         ])
-        self.assertFalse(any("<@" in line or "✔️" in line for line in lines))
+        expected_teams = [
+            "-# <@1> · <@2> · <@3> · <@4> · <@5>",
+            "-# <@10> · <@11>",
+            "-# <@6> · <@7> · <@8> · <@9>",
+        ]
+        self.assertEqual([lines[lines.index(row) + 1] for row in ranked], expected_teams)
+        self.assertFalse(any(isinstance(item, bot.ui.Button) for item in view.walk_children()))
+        self.assertFalse(any("✔️" in line for line in lines))
 
     def test_public_proof_links_prefer_first_place_and_keep_shorter_links_that_fit(self):
         activity = "The Fractured Archive"
