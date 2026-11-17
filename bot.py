@@ -259,7 +259,7 @@ NOVUS_PB_TROPHY_IDS={
  2:1572155458423361637,
  3:1572155471606054982,
 }
-PB_FEATURED_HEADING="# "
+PB_FEATURED_HEADING="## "
 PB_TOP10_TITLE="## ✦ NOVUS TOP 10"
 PB_TOP10_PODIUM_HEADING="### "
 PB_PLACEMENT_POINTS=(5,3,1)
@@ -978,7 +978,7 @@ async def on_ready():
     first_slot_issues.append(f"{activity} (refresh failed)")
     runner_up_slot_issues.append(f"{activity} (refresh failed)")
     logging.exception("Failed to refresh PB icon for %s",activity)
-  logging.info("NOVUS #1 board verification: %s occupied slots with largest trophy headings and green badges; issues=%s",
+  logging.info("NOVUS #1 board verification: %s occupied slots with level-2 trophy headings and green badges; issues=%s",
                verified_first_slots,first_slot_issues)
   logging.info("Verified custom runner-up trophies on PB boards: second=%s third=%s issues=%s",
                verified_runner_up_slots[0],verified_runner_up_slots[1],runner_up_slot_issues)

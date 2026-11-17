@@ -192,7 +192,7 @@ class PBLayoutTests(unittest.TestCase):
         )
         champion = next(child for child in board.children[0].children
                         if isinstance(child, bot.ui.Section))
-        self.assertIn("# #1 ", champion.children[0].content)
+        self.assertTrue(any(line.startswith("## #1 ") for line in champion.children[0].content.splitlines()))
         self.assertEqual(champion.accessory.label, "NOVUS #1")
         self.assertTrue(champion.accessory.disabled)
         self.assertEqual(champion.accessory.style, bot.discord.ButtonStyle.success)
@@ -262,7 +262,7 @@ class PBLayoutTests(unittest.TestCase):
         )
         components = board.children[0].children
         section = next(x for x in components if isinstance(x, bot.ui.Section))
-        self.assertIn("# #1 ", section.children[0].content)
+        self.assertTrue(any(line.startswith("## #1 ") for line in section.children[0].content.splitlines()))
         self.assertIn("-# ✔️ November 8, 2026", section.children[0].content)
         snapshot = bot.SnapshotPanel(
             {"Chambers of Xeric": [record(pb_date="2026-11-08")]},
