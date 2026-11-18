@@ -14,7 +14,10 @@ from proof_archive import (
  ProofUnavailable, archive_discord_proof, archive_path,
  attachment_candidates, discord_attachment_key, is_private_proof,
 )
-from podium_image import FILENAME as PODIUM_FILENAME, render_podium
+from podium_image import (ANIMATED_FILENAME as PODIUM_GIF, FILENAME as PODIUM_FILENAME,
+                          render_podium, render_podium_animation)
+
+PODIUM_ATTACHMENTS={PODIUM_FILENAME,PODIUM_GIF}
 
 load_dotenv()
 TOKEN=os.getenv("DISCORD_TOKEN","")
@@ -977,7 +980,7 @@ async def on_ready():
     # message.attachments. Verify against that media rather than the file list.
     podium_tile=next((tile for item in live_parts if isinstance(item,ui.MediaGallery)
                       for tile in item.items
-                      if urlparse(tile.media.url).path.rsplit("/",1)[-1]==PODIUM_FILENAME),None)
+                      if podium_attachment_name(tile.media.url) in PODIUM_ATTACHMENTS),None)
     podium_uploaded=False
     if podium_tile is not None:
      try:
@@ -986,7 +989,7 @@ async def on_ready():
       location=urlparse(url)
       if location.scheme=="https" and location.hostname=="cdn.discordapp.com":
        downloaded=await asyncio.wait_for(bot.http.get_from_cdn(url),timeout=8)
-       podium_uploaded=downloaded==view.podium_png
+       podium_uploaded=downloaded==view.podium_image
      except (discord.DiscordException,aiohttp.ClientError,TimeoutError):
       logging.warning("Unable to read the published PB podium image",exc_info=True)
     dividers=sum(isinstance(item,ui.Separator) for item in live_parts)
@@ -996,6 +999,8 @@ async def on_ready():
     logging.info("Verified overall PB Top 10 on message %s: podium image uploaded=%s embedded=%s alt text present=%s numbered ranks=%s indented trophy counts=%s scoring footer=%s single heading=%s",
                  message.id,podium_uploaded,podium_tile is not None,bool(podium_tile and podium_tile.description),
                  numbered_rows,muted_breakdowns,scoring_footer,single_heading)
+    if podium_uploaded and view.podium_filename==PODIUM_GIF:
+     logging.info("Verified animated podium attachment on message %s",message.id)
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   if guild.id==NOVUS_GUILD_ID:
@@ -1231,7 +1236,8 @@ class Home(PBLayoutView):
  def __init__(self,points=None,*,guild_id=None,podium=None):
   super().__init__(timeout=None)
   points=points or []
-  self.podium_png=podium
+  self.podium_image=podium
+  self.podium_filename=PODIUM_GIF if podium and podium.startswith((b"GIF87a",b"GIF89a")) else PODIUM_FILENAME
   self.standing_parts=top10_standings_parts(points,guild_id)
 
   hero=ui.Container(accent_colour=GOLD)
@@ -1240,9 +1246,9 @@ class Home(PBLayoutView):
   hero.add_item(banner)
   hero.add_item(ui.TextDisplay(PB_TOP10_TITLE))
   hero.add_item(ui.Separator())
-  if self.podium_png is not None:
+  if self.podium_image is not None:
    gallery=ui.MediaGallery()
-   gallery.add_item(media=f"attachment://{PODIUM_FILENAME}")
+   gallery.add_item(media=f"attachment://{self.podium_filename}")
    hero.add_item(gallery)
    hero.add_item(ui.Separator())
    # Use the existing formatted ranks 4 through 10 verbatim. When there are
@@ -1299,13 +1305,17 @@ class Home(PBLayoutView):
    try:
     names=await podium_player_names(g,leaders)
     if names:
-     podium=await asyncio.to_thread(render_podium,leaders,names)
+     try:
+      podium=await asyncio.to_thread(render_podium_animation,leaders,names)
+     except (OSError,ValueError):
+      logging.warning("Podium animation unavailable; using the static image",exc_info=True)
+      podium=await asyncio.to_thread(render_podium,leaders,names)
    except (discord.HTTPException,OSError,ValueError):
     logging.exception("Could not render the PB podium; using text standings")
   return cls(points,guild_id=g,podium=podium)
 
  def podium_file(self):
-  return discord.File(BytesIO(self.podium_png),filename=PODIUM_FILENAME) if self.podium_png is not None else None
+  return discord.File(BytesIO(self.podium_image),filename=self.podium_filename) if self.podium_image is not None else None
 
  def send_options(self):
   file=self.podium_file()
@@ -1313,7 +1323,7 @@ class Home(PBLayoutView):
 
  def edit_options(self,message):
   file=self.podium_file()
-  attachments=[a for a in message.attachments if a.filename!=PODIUM_FILENAME]
+  attachments=[a for a in message.attachments if a.filename not in PODIUM_ATTACHMENTS]
   if file or len(attachments)!=len(message.attachments):
    return {"view":self,"attachments":[*attachments,*([file] if file else [])]}
   return {"view":self}
@@ -3122,11 +3132,15 @@ PODIUM_ALT_WINDOW=(
 )
 
 
+def podium_attachment_name(url):
+ parsed=urlparse(url)
+ return parsed.netloc if parsed.scheme=="attachment" else parsed.path.rsplit("/",1)[-1]
+
+
 def podium_gallery_tile(view):
  return next((tile for item in view.walk_children() if isinstance(item,ui.MediaGallery)
               for tile in item.items
-              if urlparse(tile.media.url).path.rsplit("/",1)[-1]==PODIUM_FILENAME
-              or tile.media.url==f"attachment://{PODIUM_FILENAME}"),None)
+              if podium_attachment_name(tile.media.url) in PODIUM_ATTACHMENTS),None)
 
 
 async def clear_podium_badge(message):
@@ -3142,14 +3156,15 @@ async def clear_podium_badge(message):
  url=urlparse(tile.media.url)
  if url.scheme!="https" or url.hostname!="cdn.discordapp.com":
   return False
- png=await asyncio.wait_for(bot.http.get_from_cdn(tile.media.url),timeout=10)
- tile.media=f"attachment://{PODIUM_FILENAME}"
+ filename=podium_attachment_name(tile.media.url)
+ picture=await asyncio.wait_for(bot.http.get_from_cdn(tile.media.url),timeout=10)
+ tile.media=f"attachment://{filename}"
  tile.description=None
- other=[a for a in message.attachments if a.filename!=PODIUM_FILENAME]
+ other=[a for a in message.attachments if a.filename!=filename]
  # These are snapshot copies. Let the globally registered Home view keep
  # handling buttons instead of registering inert callbacks from the readback.
  view.stop()
- file=discord.File(BytesIO(png),filename=PODIUM_FILENAME)
+ file=discord.File(BytesIO(picture),filename=filename)
  try:
   updated=await message.edit(view=view,attachments=[*other,file],
                              allowed_mentions=discord.AllowedMentions.none())

@@ -72,23 +72,30 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(only_podium.standing_parts[0].strip(), before.standing_parts[-1].splitlines()[-1])
         panel = view.children[0]
         self.assertIsInstance(panel.children[3], bot.ui.MediaGallery)
-        self.assertTrue(panel.children[3].items[0].media.url.endswith(bot.PODIUM_FILENAME))
+        self.assertTrue(panel.children[3].items[0].media.url.endswith(bot.PODIUM_GIF))
         self.assertIsNone(panel.children[3].items[0].description)
         self.assertNotIn("## <:pb1:", "\n".join(view.standing_parts))
         self.assertEqual(panel.children[-1].to_component_dict(), before.children[0].children[-1].to_component_dict())
-        with Image.open(BytesIO(view.podium_png)) as preview:
-            self.assertEqual((preview.format, preview.size), ("PNG", (1674, 942)))
+        with Image.open(BytesIO(view.podium_image)) as preview:
+            self.assertEqual((preview.format, preview.size), ("GIF", (1008, 567)))
             # Match the banner's aspect so the gallery can fill the card width
             # before it encounters Discord's desktop image height cap.
             self.assertAlmostEqual(preview.width / preview.height, 16 / 9, places=2)
-            preview.verify()
+            self.assertEqual((preview.n_frames, preview.info["loop"]), (60, 0))
+            first=preview.convert("RGB")
+            preview.seek(28)
+            middle=preview.convert("RGB")
+            self.assertIsNotNone(ImageChops.difference(first,middle).getbbox())
+            for box in ((380,267,631,322),(128,457,390,516),(619,457,877,516)):
+                self.assertIsNone(ImageChops.difference(first.crop(box),middle.crop(box)).getbbox())
+        self.assertIs(view.podium_image, only_podium.podium_image)
         old_image = SimpleNamespace(filename=bot.PODIUM_FILENAME)
         unrelated_attachment = SimpleNamespace(filename="other.png")
         message = SimpleNamespace(attachments=[old_image, unrelated_attachment])
         edit_files = view.edit_options(message)["attachments"]
         self.assertEqual(edit_files[0], unrelated_attachment)
-        self.assertEqual(edit_files[1].filename, bot.PODIUM_FILENAME)
-        self.assertEqual(view.send_options()["file"].filename, bot.PODIUM_FILENAME)
+        self.assertEqual(edit_files[1].filename, bot.PODIUM_GIF)
+        self.assertEqual(view.send_options()["file"].filename, bot.PODIUM_GIF)
         self.assertEqual(before.edit_options(message)["attachments"], [unrelated_attachment])
 
     async def test_third_place_incumbent_stays_on_the_image_and_challenger_is_fourth(self):
@@ -101,7 +108,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
                 return_value={1: "Alpha", 2: "Bravo", 4: "Incumbent"})) as names:
             view = await bot.Home.for_points(bot.NOVUS_GUILD_ID, rows)
         names.assert_awaited_once_with(bot.NOVUS_GUILD_ID, rows[:3])
-        self.assertIsNotNone(view.podium_png)
+        self.assertIsNotNone(view.podium_image)
         self.assertIn("**4.** <@3> · **41 pts**", view.standing_parts[0])
 
     async def test_podium_holders_are_bootstrapped_by_approval_order_and_survive_restart(self):
