@@ -11,9 +11,9 @@ FILENAME = "novus-live-podium.png"
 ASSETS = Path(__file__).parent / "assets" / "podium"
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 PLATES = (
-    (585, 426, 360, "#f6c77e"),
-    (339, 740, 343, "#c5d5ec"),
-    (831, 740, 343, "#eaa477"),
+    (837, 426, 450, "#f6c77e"),
+    (432, 740, 450, "#c5d5ec"),
+    (1242, 740, 450, "#eaa477"),
 )
 COUNT_KEYS = ("firsts", "seconds", "thirds")
 COUNT_COLORS = ("#f6c77e", "#c5d5ec", "#eaa477")

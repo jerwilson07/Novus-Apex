@@ -77,7 +77,10 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("## <:pb1:", "\n".join(view.standing_parts))
         self.assertEqual(panel.children[-1].to_component_dict(), before.children[0].children[-1].to_component_dict())
         with Image.open(BytesIO(view.podium_png)) as preview:
-            self.assertEqual((preview.format, preview.size), ("PNG", (1170, 942)))
+            self.assertEqual((preview.format, preview.size), ("PNG", (1674, 942)))
+            # Match the banner's aspect so the gallery can fill the card width
+            # before it encounters Discord's desktop image height cap.
+            self.assertAlmostEqual(preview.width / preview.height, 16 / 9, places=2)
             preview.verify()
         old_image = SimpleNamespace(filename=bot.PODIUM_FILENAME)
         unrelated_attachment = SimpleNamespace(filename="other.png")
