@@ -1,4 +1,6 @@
 import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -86,16 +88,54 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view.send_options()["file"].filename, bot.PODIUM_FILENAME)
         self.assertEqual(before.edit_options(message)["attachments"], [unrelated_attachment])
 
-    async def test_shared_first_uses_text_for_all_tied_players(self):
-        ranks = (1, 1, 3, 4)
-        rows = [dict(rank=rank, member_id=i, points=30-rank, firsts=5, seconds=2, thirds=1)
-                for i,rank in enumerate(ranks,1)]
-        with patch.object(bot, "podium_player_names", new=AsyncMock()) as names:
+    async def test_third_place_incumbent_stays_on_the_image_and_challenger_is_fourth(self):
+        entries = [dict(member_id=i, points=p, firsts=5, seconds=2, thirds=1)
+                   for i,p in enumerate((50, 45, 41, 41, 40), 1)]
+        rows = bot.rank_pb_points(entries, holders={1: 1, 2: 2, 3: 4})
+        self.assertEqual([(r["rank"], r["member_id"]) for r in rows],
+                         [(1, 1), (2, 2), (3, 4), (4, 3), (5, 5)])
+        with patch.object(bot, "podium_player_names", new=AsyncMock(
+                return_value={1: "Alpha", 2: "Bravo", 4: "Incumbent"})) as names:
             view = await bot.Home.for_points(bot.NOVUS_GUILD_ID, rows)
-        names.assert_not_called()
-        self.assertIsNone(view.podium_png)
-        self.assertIn("<@1>", view.standing_parts[0])
-        self.assertIn("<@2>", view.standing_parts[0])
+        names.assert_awaited_once_with(bot.NOVUS_GUILD_ID, rows[:3])
+        self.assertIsNotNone(view.podium_png)
+        self.assertIn("**4.** <@3> · **41 pts**", view.standing_parts[0])
+
+    async def test_podium_holders_are_bootstrapped_by_approval_order_and_survive_restart(self):
+        with TemporaryDirectory() as tmp, patch.object(bot, "DBPATH", str(Path(tmp) / "pb.sqlite3")):
+            db = bot.Store()
+            await db.open()
+            g = bot.NOVUS_GUILD_ID
+            try:
+                challenger = await db.add(g, 10, "Bosses", "Zulrah", "Standard", "New", "10",
+                                          2000, "2026-11-17", "https://example.org/new")
+                incumbent = await db.add(g, 20, "Bosses", "Vorkath", "Standard", "Holder", "20",
+                                         2000, "2026-11-17", "https://example.org/old")
+                # The challenger was submitted first, but their approval came later.
+                await db.conn.executemany(
+                    "UPDATE submissions SET status='approved',updated=? WHERE id=?",
+                    [("2026-11-17T15:00:00+00:00", incumbent),
+                     ("2026-11-17T15:01:00+00:00", challenger)],
+                )
+                await db.conn.commit()
+                with patch.object(bot, "store", db):
+                    rows = await bot.calculate_pb_points(g)
+                self.assertEqual([(r["rank"], r["member_id"]) for r in rows], [(1, 20), (2, 10)])
+            finally:
+                await db.conn.close()
+
+            db = bot.Store()
+            await db.open()
+            try:
+                self.assertEqual(await db.podium_holders(g), {1: 20, 2: 10})
+                better = await db.add(g, 10, "Bosses", "Vorkath", "Standard", "New", "10",
+                                      1900, "2026-11-17", "https://example.org/better")
+                self.assertTrue(await db.change(better, "pending", "approved", reviewer=1))
+                self.assertEqual(await db.podium_holders(g), {1: 10, 2: 20})
+                await db.clear_guild(g)
+                self.assertEqual(await db.podium_holders(g), {})
+            finally:
+                await db.conn.close()
 
     def test_podium_cache_reuses_png_and_only_nameplate_text_changes(self):
         rows = [dict(rank=i, member_id=i, points=30-i, firsts=5, seconds=2, thirds=1)
@@ -159,18 +199,23 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         other_author.edit.assert_not_called()
         old.edit.assert_awaited_once()
 
-    def test_exact_ties_share_ranks_and_keep_cutoff_ties(self):
+    def test_exact_ties_below_podium_share_ranks_and_keep_cutoff_ties(self):
         def score(member_id, firsts):
             return dict(member_id=member_id, firsts=firsts, seconds=0,
                         thirds=0, points=firsts*5)
         entries = [score(i, 15-i) for i in range(1, 11)]
         entries += [score(20, 14), score(21, 6), score(22, 6), score(23, 5)]
-        points = bot.rank_pb_points(entries)
-        self.assertEqual([p["rank"] for p in points], [1, 1, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10])
+        points = bot.rank_pb_points(entries, holders={1: 20})
+        self.assertEqual([p["rank"] for p in points], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10])
+        self.assertEqual([p["member_id"] for p in points[:2]], [20, 1])
         text = bot.top10_standings_text(points, 123)
-        self.assertEqual(text.count(f"## {EMOJIS['pb1']} <@"), 2)
+        self.assertEqual(text.count(f"## {EMOJIS['pb1']} <@"), 1)
         self.assertEqual(text.count("**10.**"), 3)
         self.assertNotIn("<@23>", text)
+
+        entries = [score(i, p) for i,p in enumerate((12,11,10,9,8,8,7,6,5,4),1)]
+        self.assertEqual([p["rank"] for p in bot.rank_pb_points(entries)],
+                         [1, 2, 3, 4, 5, 5, 7, 8, 9, 10])
 
     def test_boss_and_raid_use_all_custom_podium_icons(self):
         items = [record(id=i, member_ids=str(i), ms=1000*i) for i in range(1, 4)]

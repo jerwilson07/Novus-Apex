@@ -2,6 +2,7 @@ import os, re, asyncio, logging
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from itertools import groupby
 from urllib.parse import parse_qs, urlparse
 import aiohttp, discord, aiosqlite
 from discord import app_commands, ui
@@ -398,6 +399,9 @@ class Store:
   reviewer INTEGER,review_channel INTEGER,review_message INTEGER,created TEXT,updated TEXT);
   CREATE INDEX IF NOT EXISTS pb_rank ON submissions(guild,category,activity,variant,status,ms);
   CREATE TABLE IF NOT EXISTS panels(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
+  CREATE TABLE IF NOT EXISTS pb_podium_holders(
+    guild INTEGER NOT NULL,rank INTEGER NOT NULL,member_id INTEGER NOT NULL,
+    PRIMARY KEY(guild,rank));
   CREATE TABLE IF NOT EXISTS panel_banners(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS one_time_pb_migrations(name TEXT PRIMARY KEY,applied TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS panel_bosses(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
@@ -458,13 +462,27 @@ class Store:
    await self.conn.commit();return c.lastrowid
  async def change(self,sid,prev,target,reviewer=None,proof=None):
   async with self.lock:
-   if proof is None:
-    c=await self.conn.execute("UPDATE submissions SET status=?,reviewer=?,updated=? WHERE id=? AND status=?",
-      (target,reviewer,now(),sid,prev))
-   else:
-    c=await self.conn.execute("UPDATE submissions SET status=?,proof=?,updated=? WHERE id=? AND status=?",
-      (target,proof,now(),sid,prev))
-   await self.conn.commit();return c.rowcount==1
+   try:
+    record=await self.one("SELECT guild FROM submissions WHERE id=? AND status=?",(sid,prev))
+    if not record:
+     return False
+    g=record["guild"]
+    if (prev=="approved" or target=="approved") and not await self.podium_holders(g):
+     # Bootstrap before the new result can change who held the spot.
+     await self.rank_and_save_pb_points(g)
+    if proof is None:
+     c=await self.conn.execute("UPDATE submissions SET status=?,reviewer=?,updated=? WHERE id=? AND status=?",
+       (target,reviewer,now(),sid,prev))
+    else:
+     c=await self.conn.execute("UPDATE submissions SET status=?,proof=?,updated=? WHERE id=? AND status=?",
+       (target,proof,now(),sid,prev))
+    if c.rowcount==1 and (prev=="approved" or target=="approved"):
+     await self.rank_and_save_pb_points(g)
+    await self.conn.commit()
+    return c.rowcount==1
+   except BaseException:
+    await self.conn.rollback()
+    raise
  async def attach_review(self,sid,ch,msg):
   async with self.lock:
    await self.conn.execute("UPDATE submissions SET review_channel=?,review_message=? WHERE id=?",(ch,msg,sid))
@@ -601,6 +619,21 @@ class Store:
   return await self.all("""SELECT * FROM submissions
   WHERE guild=? AND status='approved'
   ORDER BY category,activity,variant,ms,id""",(g,))
+ async def podium_holders(self,g):
+  rows=await self.all("SELECT rank,member_id FROM pb_podium_holders WHERE guild=?",(g,))
+  return {row["rank"]:row["member_id"] for row in rows}
+ async def rank_and_save_pb_points(self,g):
+  """Rank and save within the caller's locked SQLite transaction."""
+  previous=await self.podium_holders(g)
+  rows=await self.approved_for_points(g)
+  holders=previous or seed_pb_podium(rows)
+  ranked=rank_pb_points(pb_point_totals(rows),holders=holders)
+  current=podium_holders_from_ranks(ranked)
+  if current!=previous:
+   await self.conn.execute("DELETE FROM pb_podium_holders WHERE guild=?",(g,))
+   await self.conn.executemany("INSERT INTO pb_podium_holders VALUES(?,?,?)",
+                               [(g,rank,member) for rank,member in current.items()])
+  return ranked
  async def raid_top3(self,g,activity):
   rows=await self.all("""SELECT * FROM submissions
   WHERE guild=? AND category='Raids' AND activity=? AND status='approved'
@@ -609,6 +642,7 @@ class Store:
  async def clear_guild(self,g):
   async with self.lock:
    await self.conn.execute("DELETE FROM submissions WHERE guild=?",(g,))
+   await self.conn.execute("DELETE FROM pb_podium_holders WHERE guild=?",(g,))
    remaining=await self.one("SELECT COUNT(*) AS n FROM submissions")
    if remaining and remaining["n"]==0:
     await self.conn.execute("DELETE FROM sqlite_sequence WHERE name='submissions'")
@@ -646,25 +680,54 @@ def pb_points_order(entry):
  return (-entry["points"],-entry["firsts"],-entry["seconds"],-entry["thirds"])
 
 
-def rank_pb_points(entries,limit=10):
- # IDs only stabilize display order within a tie; they never affect rank.
+def rank_pb_points(entries,limit=10,*,holders=None):
+ """Award unique podium ranks, retaining competition ranks below them."""
+ holders=holders or {}
+ prior_order={member:rank for rank,member in holders.items()}
  ordered=sorted(entries,key=lambda entry:(*pb_points_order(entry),entry["member_id"]))
  ranked=[]
- previous=None
- rank=0
- for index,entry in enumerate(ordered,1):
-  key=pb_points_order(entry)
-  if key!=previous:
-   rank=index
-   previous=key
-  if rank>limit:
+ position=1
+ for _,members in groupby(ordered,key=pb_points_order):
+  if position>limit:
    break
-  ranked.append({**entry,"rank":rank})
+  group=list(members)
+  end=position+len(group)
+  slots=range(position,min(end,4))
+  remaining={entry["member_id"]:entry for entry in group}
+  # Reserve each still-tied incumbent's exact place before filling vacancies.
+  reserved={slot:remaining.pop(holders[slot]) for slot in slots if holders.get(slot) in remaining}
+  candidates=iter(sorted(remaining.values(),key=lambda entry:(
+   prior_order.get(entry["member_id"],4),entry["member_id"]
+  )))
+  for slot in slots:
+   entry=reserved.get(slot)
+   if entry is None:
+    entry=next(candidates)
+    remaining.pop(entry["member_id"])
+   if slot<=limit:
+    ranked.append({**entry,"rank":slot})
+  lower=max(position,4)
+  if lower<=limit:
+   ranked.extend({**entry,"rank":lower} for entry in remaining.values())
+  position=end
  return ranked
 
 
-async def calculate_pb_points(g):
- rows=await store.approved_for_points(g)
+def podium_holders_from_ranks(ranked):
+ return {entry["rank"]:entry["member_id"] for entry in ranked if entry["rank"]<=3}
+
+
+def seed_pb_podium(rows):
+ """Reconstruct the initial holders from recorded approval order."""
+ holders={}
+ approved=[]
+ for row in sorted(rows,key=lambda row:(row["updated"] or row["created"] or "",row["id"])):
+  approved.append(row)
+  holders=podium_holders_from_ranks(rank_pb_points(pb_point_totals(approved),holders=holders))
+ return holders
+
+
+def pb_point_totals(rows):
  grouped={}
  scores={}
 
@@ -678,6 +741,7 @@ async def calculate_pb_points(g):
 
  for key,results in grouped.items():
   category,activity,variant=key
+  results=sorted(results,key=lambda r:(r["ms"],r["id"]))
   if category=="Bosses" and solo_boss_variant(activity,variant):
    results=unique_solo_results(results,5)
   else:
@@ -710,7 +774,18 @@ async def calculate_pb_points(g):
     else:
      entry["thirds"]+=1
 
- return rank_pb_points(scores.values())
+ return scores.values()
+
+
+async def calculate_pb_points(g):
+ async with store.lock:
+  try:
+   ranked=await store.rank_and_save_pb_points(g)
+   await store.conn.commit()
+   return ranked
+  except BaseException:
+   await store.conn.rollback()
+   raise
 
 
 def member_ids_for_record(record):
@@ -1219,7 +1294,7 @@ class Home(PBLayoutView):
  async def for_points(cls,g,points):
   podium=None
   leaders=[row for row in points if row["rank"]<=3]
-  # An exact tie retains the text standings so no shared placement is hidden.
+  # The podium requires three distinct ranked slots.
   if g==NOVUS_GUILD_ID and [row["rank"] for row in leaders]==[1,2,3]:
    try:
     names=await podium_player_names(g,leaders)
