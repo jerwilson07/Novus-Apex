@@ -2,15 +2,15 @@
 
 from functools import lru_cache
 from io import BytesIO
-from lzma import LZMAError, decompress
 from pathlib import Path
-from struct import unpack
+from math import sin, cos, tau
 
 from PIL import Image, ImageDraw, ImageFont
 
 
 FILENAME = "novus-live-podium.png"
-ANIMATED_FILENAME = "novus-live-podium.gif"
+ANIMATED_FILENAME = "novus-live-podium.webp"
+LEGACY_ANIMATED_FILENAME = "novus-live-podium.gif"
 ASSETS = Path(__file__).parent / "assets" / "podium"
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 PLATES = (
@@ -59,66 +59,104 @@ def render_podium_animation(entries, names):
     return _animate_fields(_label_fields(entries, names))
 
 
+# Coordinates are in the approved 1116 by 628 stage drawing, whose layers
+# were translated up 72 units. The production artwork is exactly 1.5x scale.
+MOTION_ZONES = (
+    ((558,220,175,136), (255,230,159),
+     ((439,161,.1,5.6), (666,170,1.2,6.5), (700,249,2.4,4), (413,232,4,3), (460,265,5,3))),
+    ((288,468,152,120), (197,231,255),
+     ((182,418,1.7,5.6), (377,432,.8,5.2), (157,474,3.2,4), (399,493,4.8,3))),
+    ((828,468,152,120), (255,181,129),
+     ((725,421,.2,5.1), (928,431,1.2,5.5), (707,494,3.2,3), (945,481,4.4,4))),
+)
+FRAME_COUNT = 60
+FRAME_DELAY_MS = 100
+SCALE = 1.5
+
+
 @lru_cache(maxsize=1)
-def _motion_stage():
-    # Packed palette-index frames: size, timing, RGB palette, LZMA XOR deltas.
-    data = b"".join((ASSETS / f"stage-motion.part{i}").read_bytes() for i in range(5))
-    if len(data) <= 776:
-        raise ValueError("Incomplete podium motion asset")
-    width, height, count, delay = unpack(">HHHH", data[:8])
-    if (width, height, count, delay) != (1008, 567, 60, 100):
-        raise ValueError("Unexpected podium motion format")
-    try:
-        raw = decompress(data[776:])
-    except LZMAError as exc:
-        raise ValueError("Unreadable podium motion asset") from exc
-    size = width * height
-    if len(raw) != count * size:
-        raise ValueError("Incomplete podium motion frames")
-    frames = []
-    current = 0
-    for offset in range(0, len(raw), size):
-        current ^= int.from_bytes(raw[offset:offset + size], "big")
-        frames.append(current.to_bytes(size, "big"))
-    return (width, height), delay, data[8:776], tuple(frames)
+def _foreground_mask():
+    with Image.open(ASSETS / "motion-foreground-mask.png") as image:
+        return image.convert("L")
+
+
+@lru_cache(maxsize=96)
+def _glow_sprite(rx, ry, color):
+    gradient = Image.radial_gradient("L").resize((rx * 2, ry * 2),Image.Resampling.BILINEAR)
+    sprite = Image.new("RGBA", gradient.size, color + (0,))
+    sprite.putalpha(gradient.point(lambda v: round(255 * max(0, 1 - v / 172)**1.5)))
+    return sprite
+
+
+def _paint_glow(canvas, x, y, rx, ry, color, intensity):
+    sprite = _glow_sprite(rx, ry, color).copy()
+    sprite.putalpha(sprite.getchannel("A").point(lambda v: round(v * intensity)))
+    canvas.alpha_composite(sprite,(x-rx,y-ry))
+
+
+def _motion_frame(still, mask, index):
+    frame = still.copy()
+    phase = tau * index / FRAME_COUNT
+    for j, ((x,y,rx,ry), color, stars) in enumerate(MOTION_ZONES):
+        pulse = (1 + sin(phase-j*.9))/2
+        _paint_glow(frame,round(x*SCALE),round((y-72)*SCALE),
+                    round(rx*SCALE),round(ry*SCALE),color,
+                    (.09+.10*pulse) if j==0 else (.07+.08*pulse))
+        for sx,sy,offset,radius in stars:
+            px=round((sx+8*sin(phase+offset))*SCALE)
+            py=round((sy-72+11*cos(phase+offset))*SCALE)
+            twinkle=((1+sin(phase+offset))/2)**1.7
+            strength=.13+.57*twinkle
+            scale=radius*(.64+.36*twinkle)*SCALE
+            glow=max(2,round(scale*2.3))
+            _paint_glow(frame,px,py,glow,glow,color,strength*.46)
+            r=max(1,round(scale))
+            star=Image.new("RGBA",(2*r+1,2*r+1))
+            draw=ImageDraw.Draw(star)
+            fill=color+(round(strength*255),)
+            if radius>=4.4:
+                n=max(1,round(r*.19))
+                draw.polygon(((r,0),(r+n,r-n),(2*r,r),(r+n,r+n),(r,2*r),
+                              (r-n,r+n),(0,r),(r-n,r-n)),fill=fill)
+            else:
+                d=max(1,round(r*.34))
+                draw.ellipse((r-d,r-d,r+d,r+d),fill=fill)
+            frame.alpha_composite(star,(px-r,py-r))
+    return Image.composite(still,frame,mask)
+
+
+class _MotionFrames:
+    """Seekable frame source for Pillow's multi-frame WebP encoder."""
+    n_frames = FRAME_COUNT - 1
+    mode = "RGBA"
+
+    def __init__(self, still, mask):
+        self.still=still
+        self.mask=mask
+        self.image=None
+
+    def seek(self,index):
+        self.image=_motion_frame(self.still,self.mask,index+1)
+
+    def getim(self):
+        return self.image.getim()
+
+    def tobytes(self):
+        return self.image.tobytes()
 
 
 @lru_cache(maxsize=4)
 def _animate_fields(fields):
-    size, delay, palette, source = _motion_stage()
-    base = Image.frombytes("P", size, source[0])
-    base.putpalette(palette)
-    color_frame = base.convert("RGB")
-    draw = ImageDraw.Draw(color_frame)
-    scale = size[0] / 1116
-    patches = []
-    for (name, points, counts), (x, y, color) in zip(
-        fields, ((558, 356, "#f6c77e"), (288, 565, "#c5d5ec"), (828, 565, "#eaa477"))
-    ):
-        y -= 72  # Matches the approved stage's nameplate transform.
-        center = round(x * scale)
-        label, face = fit_name(draw, name, 282 * scale, (20, 18, 16, 14, 13))
-        draw.text((center, round((y + 29) * scale)), label, font=face, anchor="ms", fill="#f8f4ff")
-        draw.text((center, round((y + 48) * scale)), f"{points} PTS",
-                  font=font(15), anchor="ms", fill=color)
-        for j, (count, accent) in enumerate(zip(counts, COUNT_COLORS)):
-            left = round((x + (j - 1) * 60 - 2) * scale)
-            draw.text((left, round((y + 70) * scale)), f"× {count}", font=font(13),
-                      anchor="ls", fill=accent)
-        box = (round((x - 144) * scale), round((y + 10) * scale),
-               round((x + 144) * scale), round((y + 77) * scale))
-        patch = color_frame.crop(box).quantize(palette=base,dither=Image.Dither.NONE)
-        patches.append((box[:2], patch))
-    frames = []
-    for raw in source:
-        frame = Image.frombytes("P", size, raw)
-        frame.putpalette(palette)
-        for position, patch in patches:
-            frame.paste(patch, position)
-        frames.append(frame)
+    with Image.open(BytesIO(_render_fields(fields))) as reference:
+        still = reference.convert("RGBA")
+    mask = _foreground_mask()
+    if still.size != mask.size:
+        raise ValueError("Podium artwork and motion mask do not match")
+    first = _motion_frame(still,mask,0)
     output = BytesIO()
-    frames[0].save(output, format="GIF", save_all=True, append_images=frames[1:],
-                   duration=delay, loop=0, disposal=1, optimize=True)
+    first.save(output,format="WEBP",save_all=True,
+               append_images=[_MotionFrames(still,mask)],duration=FRAME_DELAY_MS,
+               loop=0,lossless=True,quality=0,method=1)
     return output.getvalue()
 
 

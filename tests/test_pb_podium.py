@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import bot
 from PIL import Image, ImageChops, ImageDraw
-from podium_image import PLATES, _base_artwork, render_podium
+from podium_image import PLATES, _base_artwork, _foreground_mask, render_podium
 from discord.components import _component_factory
 from test_pb_ui import record
 
@@ -72,12 +72,12 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(only_podium.standing_parts[0].strip(), before.standing_parts[-1].splitlines()[-1])
         panel = view.children[0]
         self.assertIsInstance(panel.children[3], bot.ui.MediaGallery)
-        self.assertTrue(panel.children[3].items[0].media.url.endswith(bot.PODIUM_GIF))
+        self.assertTrue(panel.children[3].items[0].media.url.endswith(bot.PODIUM_ANIMATED))
         self.assertIsNone(panel.children[3].items[0].description)
         self.assertNotIn("## <:pb1:", "\n".join(view.standing_parts))
         self.assertEqual(panel.children[-1].to_component_dict(), before.children[0].children[-1].to_component_dict())
         with Image.open(BytesIO(view.podium_image)) as preview:
-            self.assertEqual((preview.format, preview.size), ("GIF", (1008, 567)))
+            self.assertEqual((preview.format, preview.size), ("WEBP", (1674, 942)))
             # Match the banner's aspect so the gallery can fill the card width
             # before it encounters Discord's desktop image height cap.
             self.assertAlmostEqual(preview.width / preview.height, 16 / 9, places=2)
@@ -86,16 +86,20 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             preview.seek(28)
             middle=preview.convert("RGB")
             self.assertIsNotNone(ImageChops.difference(first,middle).getbbox())
-            for box in ((380,267,631,322),(128,457,390,516),(619,457,877,516)):
+            for box in ((621,442,1052,545),(215,758,645,862),(1028,758,1450,862)):
                 self.assertIsNone(ImageChops.difference(first.crop(box),middle.crop(box)).getbbox())
+            with Image.open(BytesIO(render_podium(rows[:3],names))) as static:
+                diff = ImageChops.difference(first,static.convert("RGB"))
+            protected = _foreground_mask().point(lambda alpha: 255 if alpha==255 else 0)
+            self.assertIsNone(ImageChops.multiply(diff,protected.convert("RGB")).getbbox())
         self.assertIs(view.podium_image, only_podium.podium_image)
         old_image = SimpleNamespace(filename=bot.PODIUM_FILENAME)
         unrelated_attachment = SimpleNamespace(filename="other.png")
         message = SimpleNamespace(attachments=[old_image, unrelated_attachment])
         edit_files = view.edit_options(message)["attachments"]
         self.assertEqual(edit_files[0], unrelated_attachment)
-        self.assertEqual(edit_files[1].filename, bot.PODIUM_GIF)
-        self.assertEqual(view.send_options()["file"].filename, bot.PODIUM_GIF)
+        self.assertEqual(edit_files[1].filename, bot.PODIUM_ANIMATED)
+        self.assertEqual(view.send_options()["file"].filename, bot.PODIUM_ANIMATED)
         self.assertEqual(before.edit_options(message)["attachments"], [unrelated_attachment])
 
     async def test_third_place_incumbent_stays_on_the_image_and_challenger_is_fourth(self):

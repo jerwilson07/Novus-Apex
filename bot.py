@@ -14,10 +14,11 @@ from proof_archive import (
  ProofUnavailable, archive_discord_proof, archive_path,
  attachment_candidates, discord_attachment_key, is_private_proof,
 )
-from podium_image import (ANIMATED_FILENAME as PODIUM_GIF, FILENAME as PODIUM_FILENAME,
-                          render_podium, render_podium_animation)
+from podium_image import (ANIMATED_FILENAME as PODIUM_ANIMATED, FILENAME as PODIUM_FILENAME,
+                          LEGACY_ANIMATED_FILENAME as PODIUM_GIF, render_podium,
+                          render_podium_animation)
 
-PODIUM_ATTACHMENTS={PODIUM_FILENAME,PODIUM_GIF}
+PODIUM_ATTACHMENTS={PODIUM_FILENAME,PODIUM_GIF,PODIUM_ANIMATED}
 
 load_dotenv()
 TOKEN=os.getenv("DISCORD_TOKEN","")
@@ -999,8 +1000,10 @@ async def on_ready():
     logging.info("Verified overall PB Top 10 on message %s: podium image uploaded=%s embedded=%s alt text present=%s numbered ranks=%s indented trophy counts=%s scoring footer=%s single heading=%s",
                  message.id,podium_uploaded,podium_tile is not None,bool(podium_tile and podium_tile.description),
                  numbered_rows,muted_breakdowns,scoring_footer,single_heading)
-    if podium_uploaded and view.podium_filename==PODIUM_GIF:
-     logging.info("Verified animated podium attachment on message %s",message.id)
+    if podium_uploaded and view.podium_filename==PODIUM_ANIMATED:
+     media=podium_tile.media
+     logging.info("Verified HD podium attachment on message %s: size=%sx%s type=%s animated=%s",
+                  message.id,media.width,media.height,media.content_type,bool(media.flags.value&1))
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   if guild.id==NOVUS_GUILD_ID:
@@ -1237,7 +1240,11 @@ class Home(PBLayoutView):
   super().__init__(timeout=None)
   points=points or []
   self.podium_image=podium
-  self.podium_filename=PODIUM_GIF if podium and podium.startswith((b"GIF87a",b"GIF89a")) else PODIUM_FILENAME
+  self.podium_filename=PODIUM_FILENAME
+  if podium and podium.startswith(b"RIFF") and podium[8:12]==b"WEBP":
+   self.podium_filename=PODIUM_ANIMATED
+  elif podium and podium.startswith((b"GIF87a",b"GIF89a")):
+   self.podium_filename=PODIUM_GIF
   self.standing_parts=top10_standings_parts(points,guild_id)
 
   hero=ui.Container(accent_colour=GOLD)
