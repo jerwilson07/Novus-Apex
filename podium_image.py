@@ -13,13 +13,16 @@ ANIMATED_FILENAME = "novus-live-podium.webp"
 LEGACY_ANIMATED_FILENAME = "novus-live-podium.gif"
 ASSETS = Path(__file__).parent / "assets" / "podium"
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-PLATES = (
-    (837, 426, 450, "#f6c77e"),
-    (432, 740, 450, "#c5d5ec"),
-    (1242, 740, 450, "#eaa477"),
+# The approved Medal Hall composition, rasterized at production size.
+SCALE = 1674 / 1200
+PLATES = tuple(
+    (round(x * SCALE), round(deck * SCALE), round(width * SCALE), tone)
+    for x, deck, width, tone in ((600, 364, 340, "#ffd495"),
+                                  (270, 435, 320, "#c7e6ff"),
+                                  (930, 465, 320, "#ffb481"))
 )
 COUNT_KEYS = ("firsts", "seconds", "thirds")
-COUNT_COLORS = ("#f6c77e", "#c5d5ec", "#eaa477")
+COUNT_COLORS = ("#ffd495", "#c7e6ff", "#ffb481")
 
 
 @lru_cache(maxsize=16)
@@ -55,23 +58,18 @@ def _label_fields(entries, names):
 
 
 def render_podium_animation(entries, names):
-    """Superimpose live standings on the pre-rendered six-second loop."""
+    """Animate the fixed artwork with live standings on the nameplates."""
     return _animate_fields(_label_fields(entries, names))
 
 
-# Coordinates are in the approved 1116 by 628 stage drawing, whose layers
-# were translated up 72 units. The production artwork is exactly 1.5x scale.
+# These are the common aura anchors and colors from the approved preview.
 MOTION_ZONES = (
-    ((558,220,175,136), (255,230,159),
-     ((439,161,.1,5.6), (666,170,1.2,6.5), (700,249,2.4,4), (413,232,4,3), (460,265,5,3))),
-    ((288,468,152,120), (197,231,255),
-     ((182,418,1.7,5.6), (377,432,.8,5.2), (157,474,3.2,4), (399,493,4.8,3))),
-    ((828,468,152,120), (255,181,129),
-     ((725,421,.2,5.1), (928,431,1.2,5.5), (707,494,3.2,3), (945,481,4.4,4))),
+    (600, 364 - 339 * .54, (255, 212, 149)),
+    (270, 435 - 335 * .54, (199, 230, 255)),
+    (930, 465 - 320 * .54, (255, 180, 129)),
 )
 FRAME_COUNT = 60
 FRAME_DELAY_MS = 100
-SCALE = 1.5
 
 
 @lru_cache(maxsize=1)
@@ -97,31 +95,48 @@ def _paint_glow(canvas, x, y, rx, ry, color, intensity):
 def _motion_frame(still, mask, index):
     frame = still.copy()
     phase = tau * index / FRAME_COUNT
-    for j, ((x,y,rx,ry), color, stars) in enumerate(MOTION_ZONES):
-        pulse = (1 + sin(phase-j*.9))/2
-        _paint_glow(frame,round(x*SCALE),round((y-72)*SCALE),
-                    round(rx*SCALE),round(ry*SCALE),color,
-                    (.09+.10*pulse) if j==0 else (.07+.08*pulse))
-        for sx,sy,offset,radius in stars:
-            px=round((sx+8*sin(phase+offset))*SCALE)
-            py=round((sy-72+11*cos(phase+offset))*SCALE)
-            twinkle=((1+sin(phase+offset))/2)**1.7
-            strength=.13+.57*twinkle
-            scale=radius*(.64+.36*twinkle)*SCALE
-            glow=max(2,round(scale*2.3))
-            _paint_glow(frame,px,py,glow,glow,color,strength*.46)
-            r=max(1,round(scale))
-            star=Image.new("RGBA",(2*r+1,2*r+1))
-            draw=ImageDraw.Draw(star)
-            fill=color+(round(strength*255),)
-            if radius>=4.4:
-                n=max(1,round(r*.19))
-                draw.polygon(((r,0),(r+n,r-n),(2*r,r),(r+n,r+n),(r,2*r),
-                              (r-n,r+n),(0,r),(r-n,r-n)),fill=fill)
-            else:
-                d=max(1,round(r*.34))
-                draw.ellipse((r-d,r-d,r+d,r+d),fill=fill)
-            frame.alpha_composite(star,(px-r,py-r))
+    pulse = (1 + sin(phase)) / 2
+    for j, (x, y, color) in enumerate(MOTION_ZONES):
+        def glow(px, py, rx, ry, shade, intensity):
+            _paint_glow(frame, round(px*SCALE), round(py*SCALE),
+                        max(2, round(rx*SCALE)), max(2, round(ry*SCALE)),
+                        shade, intensity)
+
+        glow(x, y, 161, 157, color, .37 + .10*pulse + (.055 if j == 0 else 0))
+        if j == 0:
+            glow(x, y, 200, 177, color, .15 + .06*pulse)
+            overlay = Image.new("RGBA", frame.size)
+            mark = ImageDraw.Draw(overlay)
+            ring = tuple(round(v*SCALE) for v in (x-176, 211-176, x+176, 211+176))
+            mark.ellipse(ring, outline=(232,184,103,round(255*(.22+.09*pulse))), width=2)
+            for offset in (0, tau/2):
+                angle = phase + offset - 1.1
+                mark.arc(ring, (angle-.63)*360/tau, angle*360/tau,
+                         fill=(255,206,130,140), width=2)
+                ex, ey = x+176*cos(angle), 211+176*sin(angle)
+                glow(ex, ey, 12, 12, color, .60)
+                px, py = ex*SCALE, ey*SCALE
+                mark.ellipse((px-3, py-3, px+3, py+3), fill=(255,223,158,255))
+            frame.alpha_composite(overlay)
+        for ox, oy, offset, radius in ((116,-43,.7,5),(91,49,3.4,2.7)):
+            angle = phase + offset
+            strength = .27+.57*((1+sin(angle))/2)**2
+            for side in (-1,1):
+                px = x+side*(ox+4*sin(angle))
+                py = y+oy+6*cos(angle)
+                glow(px, py, radius*3, radius*3, color, strength*.55)
+                r = max(2, round(radius*SCALE))
+                star = Image.new("RGBA",(2*r+1,2*r+1))
+                pen = ImageDraw.Draw(star)
+                fill = color+(round(strength*255),)
+                if radius >= 5:
+                    n = max(1, round(r*.18))
+                    pen.polygon(((r,0),(r+n,r-n),(2*r,r),(r+n,r+n),(r,2*r),
+                                 (r-n,r+n),(0,r),(r-n,r-n)), fill=fill)
+                else:
+                    d = max(1, round(r*.55))
+                    pen.ellipse((r-d,r-d,r+d,r+d), fill=fill)
+                frame.alpha_composite(star,(round(px*SCALE)-r,round(py*SCALE)-r))
     return Image.composite(still,frame,mask)
 
 
@@ -162,26 +177,14 @@ def _animate_fields(fields):
 
 @lru_cache(maxsize=1)
 def _base_artwork():
-    """Build the fixed background, including the miniature trophy icons."""
-    with Image.open(ASSETS / "stage.webp") as art, Image.open(ASSETS / "trophy-icons.png") as icons:
+    """Load the approved trophies, stage, and fixed miniature icons."""
+    with Image.open(ASSETS / "stage.webp") as art:
         image = art.convert("RGBA")
-        glyphs = [icons.crop((i * 40, 0, (i + 1) * 40, 48)) for i in range(3)]
-    draw = ImageDraw.Draw(image)
-    anchors = []
-    for index, (x, y, _, _) in enumerate(PLATES):
-        # Set icon positions to the original composition, independent of the
-        # displayed count. The top pedestal's first count had two digits.
-        guides = ("× 00" if index == 0 else "× 0", "× 0", "× 0")
-        widths = [40 + int(draw.textlength(label, font=font(22)) + 1) for label in guides]
-        gap = 13
-        left = x - (sum(widths) + gap * 2) // 2
-        plate_anchors = []
-        for slot_width, glyph in zip(widths, glyphs):
-            image.alpha_composite(glyph, (left, y + 75))
-            plate_anchors.append((left + 40, y + 99))
-            left += slot_width + gap
-        anchors.append(tuple(plate_anchors))
-    return image, tuple(anchors)
+    anchors = tuple(
+        tuple((x+round((-129+89*j+37)*SCALE), y+round(113*SCALE)) for j in range(3))
+        for x, y, _, _ in PLATES
+    )
+    return image, anchors
 
 
 @lru_cache(maxsize=8)
@@ -191,11 +194,13 @@ def _render_fields(fields):
     image = artwork.copy()
     draw = ImageDraw.Draw(image)
     for (display_name, points, counts), (x, y, width, accent), labels in zip(fields, PLATES, anchors):
-        name, face = fit_name(draw, display_name, width - 38)
-        draw.text((x, y + 32), name, font=face, anchor="mm", fill="#f8f4ff")
-        draw.text((x, y + 62), f"{points} PTS", font=font(26), anchor="mm", fill=accent)
+        name, face = fit_name(draw, display_name, width - 40, sizes=(34, 31, 28, 25, 23))
+        draw.text((x, y + round(49*SCALE)), name, font=face, anchor="ms", fill="#f8f4ff")
+        draw.text((x, y + round(76*SCALE)), f"{points} PTS", font=font(27), anchor="ms", fill=accent)
         for count, position, color in zip(counts, labels, COUNT_COLORS):
-            draw.text(position, f"× {count}", font=font(22), anchor="lm", fill=color)
+            label = f"×{count}"
+            fitted, count_font = fit_name(draw, label, round(50*SCALE), sizes=(31, 28, 25, 22, 19))
+            draw.text(position, fitted, font=count_font, anchor="ls", fill=color)
     output = BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()

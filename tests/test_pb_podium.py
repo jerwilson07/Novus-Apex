@@ -86,7 +86,7 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             preview.seek(28)
             middle=preview.convert("RGB")
             self.assertIsNotNone(ImageChops.difference(first,middle).getbbox())
-            for box in ((621,442,1052,545),(215,758,645,862),(1028,758,1450,862)):
+            for box in ((608,545,1064,676),(160,650,590,774),(1088,693,1512,822)):
                 self.assertIsNone(ImageChops.difference(first.crop(box),middle.crop(box)).getbbox())
             with Image.open(BytesIO(render_podium(rows[:3],names))) as static:
                 diff = ImageChops.difference(first,static.convert("RGB"))
@@ -168,9 +168,9 @@ class PodiumTests(unittest.IsolatedAsyncioTestCase):
             erase = ImageDraw.Draw(changes)
             _, anchors = _base_artwork()
             for (x, y, width, _), positions in zip(PLATES, anchors):
-                erase.rectangle((x-width//2, y+13, x+width//2, y+77), fill="black")
+                erase.rectangle((x-width//2, y+38, x+width//2, y+110), fill="black")
                 for tx, ty in positions:
-                    erase.rectangle((tx, ty-15, tx+61, ty+15), fill="black")
+                    erase.rectangle((tx, ty-30, tx+71, ty+4), fill="black")
             self.assertIsNone(changes.getbbox())
 
     async def test_clears_alt_only_on_bot_owned_podium_copies(self):
