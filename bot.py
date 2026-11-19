@@ -37,6 +37,7 @@ PB_BANNER_GIF=Path(__file__).parent / "assets" / "novus_pb_banner.gif"
 PB_BANNER_STATIC="https://raw.githubusercontent.com/jerwilson07/Novus-PB-Board/e56d115997dde7d1696ef4c535ce366da87ba84b/assets/novus_pb_banner.jpg"
 PB_BANNER_ANIMATED="https://raw.githubusercontent.com/jerwilson07/Novus-PB-Board/main/assets/novus_pb_banner.gif"
 PB_BANNER_URL=os.getenv("PB_BANNER_URL") or (PB_BANNER_ANIMATED if PB_BANNER_GIF.is_file() else PB_BANNER_STATIC)
+PB_DIRECTORY_DIVIDER_URL="https://raw.githubusercontent.com/jerwilson07/Novus-PB-Board/main/assets/pb-directory-divider.png"
 REGULAR_RAID_SIZES=("Solo","Duo","Trio","4-Man","5-Man")
 SHARED_SIZE_RAIDS=("The Fractured Archive","Theatre of Blood","Chambers of Xeric")
 RAIDS={
@@ -1001,6 +1002,11 @@ async def on_ready():
                   [name for name in dict(PB_DIRECTORY_GROUPS)["DT2 Bosses"]
                    if name in jump_links and (icon:=activity_icon(name))
                    and f"{icon}[{name}]({jump_links[name]})" in body])
+     widths=[(item.media.width,item.media.height)
+             for component in ui.LayoutView.from_message(published).walk_children()
+             if isinstance(component,ui.MediaGallery)
+             for item in component.items if item.media.url==PB_DIRECTORY_DIVIDER_URL]
+     logging.info("Verified PB directory divider media size: %s",widths)
    except (discord.HTTPException,aiosqlite.Error):
     logging.exception("Failed to refresh PB directory emojis")
   # Update the existing home panel with the latest heading and points.
@@ -1598,9 +1604,9 @@ def boss_directory_card(jump_links=None,*,page=None):
  title="## Boss Directory"
  hint="\n-# Select an activity to jump to its leaderboard."
  icons={name:activity_icon(name) for _,names in groups for name in names}
- def render():
+ def render(sections=groups):
   lines=[]
-  for heading,names in groups:
+  for heading,names in sections:
    lines.append(f"### {heading}")
    for name in names:
     label=RAID_LABELS.get(name,name)
@@ -1627,9 +1633,17 @@ def boss_directory_card(jump_links=None,*,page=None):
    body=render()
 
  panel=ui.Container(accent_colour=BLUE)
- if page!=2:
+ if page==2:
+  panel.add_item(ui.TextDisplay(render(groups[:1])))
+  # A short, banner-width divider lets the standalone second card take the
+  # same responsive media width as the first card without padding its text.
+  divider=ui.MediaGallery()
+  divider.add_item(media=PB_DIRECTORY_DIVIDER_URL)
+  panel.add_item(divider)
+  panel.add_item(ui.TextDisplay(render(groups[1:])))
+ else:
   panel.add_item(ui.TextDisplay(title+hint))
- panel.add_item(ui.TextDisplay(body))
+  panel.add_item(ui.TextDisplay(body))
  return panel
 
 

@@ -1,8 +1,10 @@
 """Registration, validation, and publication for the added boss brackets."""
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
+from PIL import Image
 
 import bot
 from test_pb_ui import record
@@ -19,6 +21,19 @@ BRACKETS = (
 
 
 class AddedBossesLayoutTests(TestCase):
+    def test_lower_directory_divider_uses_the_same_source_width_as_the_banner(self):
+        view = bot.BossDirectory(page=2)
+        contents = view.children[0].children
+        self.assertEqual(len(contents), 3)
+        divider = contents[1]
+        self.assertIsInstance(divider, bot.ui.MediaGallery)
+        self.assertEqual(divider.items[0].media.url, bot.PB_DIRECTORY_DIVIDER_URL)
+        self.assertIsNone(divider.items[0].description)
+        asset = Path(bot.__file__).parent / "assets" / "pb-directory-divider.png"
+        with Image.open(asset) as spacer, Image.open(bot.PB_BANNER_GIF) as banner:
+            self.assertEqual(spacer.width, banner.width)
+            self.assertLessEqual(spacer.height, 16)
+
     def test_split_directory_keeps_every_icon_and_link_under_each_messages_limit(self):
         guild = SimpleNamespace(id=bot.NOVUS_GUILD_ID, emojis=[])
         links = {name: f"https://discord.com/channels/{guild.id}/1568280192936443934/{10**18+i}"
