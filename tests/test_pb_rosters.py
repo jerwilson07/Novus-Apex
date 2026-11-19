@@ -102,13 +102,13 @@ class PBRosterSubmitTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_dt2_default_does_not_replace_raid_formats_or_dt2_modes(self):
         for target, boss, category, activity, variant in (
             ("boss", "Vardorvis", "Bosses", "Vardorvis", "Awakened"),
-            ("raid|||The Fractured Archive", "__none__", "Raids", "The Fractured Archive", "Duo"),
+            ("raid|||The Fractured Archive", None, "Raids", "The Fractured Archive", "Duo"),
         ):
             with self.subTest(activity=activity):
                 i = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
                 modal = bot.SubmitModal()
                 modal.target_select._values = [target]
-                modal.boss_select._values = [boss]
+                modal.boss_select._values = [boss] if boss else []
                 modal.details_input._value = "0:46.80 | 11/11/2026"
                 with patch.object(bot, "submit", new_callable=AsyncMock) as submit:
                     modal.format_select._values = ["__none__"]

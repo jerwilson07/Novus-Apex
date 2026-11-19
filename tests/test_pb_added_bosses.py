@@ -69,6 +69,10 @@ class AddedBossesLayoutTests(TestCase):
         modal = bot.SubmitModal()
         for select in (modal.target_select, modal.format_select, modal.boss_select):
             self.assertLessEqual(len(select.options), 25)
+        self.assertEqual([option.label for option in modal.target_select.options], [*bot.RAIDS, "Boss PB"])
+        self.assertFalse(modal.boss_select.required)
+        available = {option.value for option in modal.boss_select.options}
+        self.assertEqual(available | set(bot.GAUNTLET_FORMATS.values()), set(bot.BOSSES))
         self.assertEqual(set(bot.ADDED_BOSSES), {boss for boss, _, _ in BRACKETS})
         for name in bot.ADDED_BOSSES:
             with self.subTest(boss=name):
@@ -83,13 +87,11 @@ class AddedBossesLayoutTests(TestCase):
             with self.subTest(boss=name, variant=variant):
                 self.assertEqual(bot.team_size("Bosses", variant, name), size)
                 self.assertEqual(bot.solo_boss_variant(name, variant), size == 1)
+                self.assertIn(name, available)
                 if size > 1:
-                    self.assertIn(f"boss|||{name}", [o.value for o in modal.target_select.options])
                     self.assertIn(variant, [o.value for o in modal.format_select.options])
                     self.assertIn(variant, bot.first_announcement_title(name, variant))
                     self.assertIn(variant, bot.recent_pb_title(name, variant))
-                else:
-                    self.assertIn(name, [o.value for o in modal.boss_select.options])
 
     def test_team_boards_fit_with_full_rosters_and_long_proof_links(self):
         for name, variants in bot.TEAM_BOSS_SIZES.items():
@@ -124,13 +126,33 @@ class AddedBossesLayoutTests(TestCase):
 
 
 class AddedBossesIntegrationTests(IsolatedAsyncioTestCase):
+    async def test_shared_gauntlet_option_preserves_both_pb_boards(self):
+        modal = bot.SubmitModal()
+        modal.target_select._values = ["boss"]
+        modal.details_input._value = "46.80 | 11/11/2026"
+        i = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+        with patch.object(bot, "submit", new_callable=AsyncMock) as submit:
+            modal.boss_select._values = []
+            modal.format_select._values = ["__none__"]
+            await modal.on_submit(i)
+            self.assertIn("Choose which boss", i.response.send_message.await_args.args[0])
+            modal.boss_select._values = ["Gauntlet"]
+            await modal.on_submit(i)
+            self.assertIn("Regular Gauntlet", i.response.send_message.await_args.args[0])
+            submit.assert_not_awaited()
+            for selected, activity in (("Regular Gauntlet", "Gauntlet"),
+                                       ("Corrupted Gauntlet", "Corrupted Gauntlet")):
+                modal.format_select._values = [selected]
+                await modal.on_submit(i)
+                self.assertEqual(submit.await_args.args[1:4], ("Bosses", activity, "Standard"))
+
     async def test_modal_enforces_roster_sizes_and_saves_the_exact_bracket(self):
         for name, variant, size in BRACKETS:
             with self.subTest(boss=name, variant=variant):
                 modal = bot.SubmitModal()
-                modal.target_select._values = [f"boss|||{name}" if size > 1 else "boss"]
+                modal.target_select._values = ["boss"]
                 modal.format_select._values = [variant if size > 1 else "__none__"]
-                modal.boss_select._values = ["__none__" if size > 1 else name]
+                modal.boss_select._values = [name]
                 modal.details_input._value = "46.80 | 11/11/2026"
                 i = SimpleNamespace(guild_id=123, user=SimpleNamespace(id=999),
                                     response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),

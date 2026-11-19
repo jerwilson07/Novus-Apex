@@ -945,6 +945,11 @@ async def on_ready():
  if getattr(bot, "_startup_panels_refreshed", False):return
  bot._startup_panels_refreshed=True
  logging.info("Novus PB bot ready as %s (%s)",bot.user,bot.user.id)
+ submission=SubmitModal()
+ logging.info("PB submission options: types=%s boss_count=%s team_bosses_in_boss_dropdown=%s",
+              [option.label for option in submission.target_select.options],
+              len(submission.boss_select.options),
+              [option.value for option in submission.boss_select.options if option.value in TEAM_BOSS_SIZES])
  try:
   await recover_existing_proofs()
  except Exception:
@@ -3901,10 +3906,6 @@ def submission_target_options():
   )
   for activity in RAIDS
  ]
- options.extend(
-  discord.SelectOption(label=activity,value=f"boss|||{activity}")
-  for activity in TEAM_BOSS_SIZES
- )
  options.append(
   discord.SelectOption(
    label="Boss PB",
@@ -3913,11 +3914,13 @@ def submission_target_options():
  )
  return options
 
+GAUNTLET_FORMATS={"Regular Gauntlet":"Gauntlet","Corrupted Gauntlet":"Corrupted Gauntlet"}
+
 def submission_format_options():
  seen=set()
  options=[
   discord.SelectOption(
-   label="Select if non-DT2 boss",
+   label="Standard boss (no mode)",
    value="__none__"
   )
  ]
@@ -3929,7 +3932,7 @@ def submission_format_options():
    options.append(
     discord.SelectOption(label=variant,value=variant)
    )
- for mode in ("Normal","Awakened"):
+ for mode in ("Normal","Awakened",*GAUNTLET_FORMATS):
   if mode not in seen:
    options.append(
     discord.SelectOption(label=mode,value=mode)
@@ -3938,12 +3941,12 @@ def submission_format_options():
 
 def boss_submission_options():
  return [
-  discord.SelectOption(label="Select if Raid PB",value="__none__"),
-  *[
-   discord.SelectOption(label=activity,value=activity)
-   for activity in BOSSES
-   if activity not in TEAM_BOSS_SIZES
-  ]
+  discord.SelectOption(
+   label="Gauntlet / Corrupted Gauntlet" if activity=="Gauntlet" else activity,
+   value=activity,
+  )
+  for activity in sorted(BOSSES,key=str.casefold)
+  if activity!="Corrupted Gauntlet"
  ]
 
 def parse_submission_details(raw):
@@ -3979,9 +3982,9 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
   self.boss_select=ui.Select(
    placeholder="Choose boss if submitting a boss PB",
    options=boss_submission_options(),
-   min_values=1,
+   min_values=0,
    max_values=1,
-   required=True,
+   required=False,
    custom_id="pb:submit:boss"
   )
   self.details_input=ui.TextInput(
@@ -3998,17 +4001,17 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
 
   self.add_item(ui.Label(
    text="What are you submitting?",
-   description="Choose a raid, Nex, The Hueycoatl, or Boss PB for other bosses.",
+   description="Choose a raid or Boss PB.",
    component=self.target_select
   ))
   self.add_item(ui.Label(
    text="Format / boss mode",
-   description="Choose raid format, size for Nex/Hueycoatl, or DT2 mode. Otherwise use the first option.",
+   description="Choose raid format, Nex/Hueycoatl size, DT2 mode, or Gauntlet type. Otherwise pick Standard.",
    component=self.format_select
   ))
   self.add_item(ui.Label(
    text="Boss",
-   description="Only used for Boss PB. Otherwise choose the first option.",
+   description="Choose the boss for a Boss PB. Leave blank for raids.",
    component=self.boss_select
   ))
   self.add_item(ui.Label(
@@ -4025,7 +4028,7 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
  async def on_submit(self,i):
   target=self.target_select.values[0]
   selected_format=self.format_select.values[0]
-  selected_boss=self.boss_select.values[0]
+  selected_boss=next(iter(self.boss_select.values),None)
 
   if target.startswith("raid|||"):
    category="Raids"
@@ -4040,12 +4043,19 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    variant=selected_format
   else:
    category="Bosses"
-   activity=target.split("|||",1)[1] if target.startswith("boss|||") else selected_boss
+   activity=selected_boss
    if activity not in BOSSES:
     return await i.response.send_message(
      "Choose which boss the PB is for.",
      ephemeral=True
     )
+   if activity=="Gauntlet":
+    if selected_format not in GAUNTLET_FORMATS:
+     return await i.response.send_message(
+      "Choose **Regular Gauntlet** or **Corrupted Gauntlet** in the format dropdown.",
+      ephemeral=True
+     )
+    activity=GAUNTLET_FORMATS[selected_format]
    valid_modes=BOSSES[activity]
    if len(valid_modes)==1:
     variant=valid_modes[0]
