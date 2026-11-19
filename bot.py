@@ -80,6 +80,18 @@ BOSSES={
 CATS={"Raids":RAIDS,"Bosses":BOSSES}
 NON_SOLO_BOSSES={"Yama","Royal Titans"}
 ADDED_BOSSES=("Hespori","Amoxliatl",*TEAM_BOSS_SIZES)
+PB_DIRECTORY_GROUPS=(
+ ("Minigames",("Inferno","Fortis Colosseum","Fight Caves")),
+ ("Raids",tuple(RAIDS)),
+ ("Slayer Bosses",("Alchemical Hydra","Araxxor","Grotesque Guardians")),
+ ("Bosses",tuple(sorted((
+  "Gauntlet","Corrupted Gauntlet","Doom of Mokhaiotl","Demonic Brutus",
+  "Mad Angel","Maggot King","Phantom Muspah","Phosani's Nightmare",
+  "Royal Titans","Vorkath","Yama","Zulrah",*ADDED_BOSSES,
+ ),key=str.casefold))),
+ ("DT2 Bosses",("Duke Sucellus","The Leviathan","Vardorvis","The Whisperer")),
+)
+PB_DIRECTORY_ORDER=tuple(name for _,names in PB_DIRECTORY_GROUPS for name in names)
 ROYAL_TITANS_35_PARTNER="What A Piety"
 royal_titans_35_partner_id=None
 
@@ -973,13 +985,12 @@ async def on_ready():
     await paced_startup_edit(message, view=BossDirectory(jump_links),allowed_mentions=discord.AllowedMentions.none())
     if guild.id==NOVUS_GUILD_ID:
      published=await ch.fetch_message(message.id)
-     buttons={item.label:item for item in ui.LayoutView.from_message(published).walk_children()
-              if isinstance(item,ui.Button) and item.url}
-     logging.info("Verified added boss directory links: %s; custom emojis: %s",
-                  [boss for boss in ADDED_BOSSES
-                   if boss in buttons and buttons[boss].url==jump_links.get(boss)],
-                  [boss for boss in ADDED_BOSSES
-                   if boss in buttons and str(buttons[boss].emoji)==NOVUS_ADDED_BOSS_EMOJIS[boss]])
+     body=old_announcement_text(published)
+     links={boss:f"[{boss}]({jump_links[boss]})" for boss in ADDED_BOSSES if boss in jump_links}
+     logging.info("Verified added boss directory text links: %s; custom emojis: %s",
+                  [boss for boss,link in links.items() if link in body],
+                  [boss for boss,link in links.items()
+                   if f"{NOVUS_ADDED_BOSS_EMOJIS[boss]} {link}" in body])
    except (discord.HTTPException,aiosqlite.Error):
     logging.exception("Failed to refresh PB directory emojis")
   # Update the existing home panel with the latest heading and points.
@@ -1543,79 +1554,43 @@ class BossDirectory(PBLayoutView):
  def __init__(self,jump_links=None):
   super().__init__(timeout=None)
   jump_links=jump_links or {}
+  title="## Boss Directory"
+  hint="\n-# Select an activity to jump to its leaderboard."
+  groups=PB_DIRECTORY_GROUPS
+  icons={name:activity_icon(name) for _,names in groups for name in names}
+  def render():
+   lines=[]
+   for heading,names in groups:
+    lines.append(f"### {heading}")
+    for name in names:
+     label=RAID_LABELS.get(name,name)
+     url=jump_links.get(name)
+     link=f"[{label}]({url})" if url else f"**{label}**"
+     lines.append(icons[name]+link)
+   return "\n".join(lines)
+
+  body=render()
+  def fits(heading,text):
+   return len((heading+text).encode("utf-16-le"))//2<=PB_PUBLIC_TEXT_LIMIT
+
+  # Keep the links and new custom emojis on the same live directory message.
+  # When it gets tight, drop the hint and then decorative icons by group.
+  if not fits(title+hint,body):
+   hint=""
+   priority=("DT2 Bosses","Minigames","Slayer Bosses","Raids","Bosses")
+   grouped=dict(groups)
+   for heading in priority:
+    if fits(title,body):
+     break
+    for name in grouped[heading]:
+     if name not in NOVUS_ADDED_BOSS_EMOJIS:
+      icons[name]=""
+    body=render()
 
   panel=ui.Container(accent_colour=BLUE)
-  panel.add_item(ui.TextDisplay(
-   "## Boss Directory\n"
-   "-# Select an activity to jump to its leaderboard."
-  ))
-
-  lines=[
-   "### Minigames",
-  ]
-
-  for name in ("Inferno","Fortis Colosseum","Fight Caves"):
-   url=jump_links.get(name)
-   lines.append(
-    f"{activity_icon(name)}[{name}]({url})"
-    if url
-    else f"{activity_icon(name)}**{name}**"
-   )
-
-  lines.append("### Raids")
-  for activity in RAIDS:
-   label=RAID_LABELS[activity]
-   url=jump_links.get(activity)
-   lines.append(
-    f"{activity_icon(activity)}[{label}]({url})"
-    if url
-    else f"{activity_icon(activity)}**{label}**"
-   )
-
-  remaining_groups=[
-   ("Slayer Bosses",[
-    "Alchemical Hydra","Araxxor","Grotesque Guardians"
-   ]),
-  ]
-
-  for heading,names in remaining_groups:
-   lines.append(f"### {heading}")
-   for name in names:
-    url=jump_links.get(name)
-    lines.append(
-     f"{activity_icon(name)}[{name}]({url})"
-     if url
-     else f"{activity_icon(name)}**{name}**"
-    )
-
-  panel.add_item(ui.TextDisplay("\n".join(lines)))
-  panel.add_item(ui.TextDisplay("### Bosses"))
-  names=sorted((
-   "Gauntlet","Corrupted Gauntlet","Doom of Mokhaiotl","Demonic Brutus",
-   "Mad Angel","Maggot King","Phantom Muspah","Phosani's Nightmare",
-   "Royal Titans","Vorkath","Yama","Zulrah",*ADDED_BOSSES,
-  ),key=str.casefold)
-  # Link buttons avoid exceeding Discord's combined Text Display budget.
-  for start in range(0,len(names),4):
-   row=ui.ActionRow()
-   for index,name in enumerate(names[start:start+4],start):
-    icon=activity_icon(name).strip()
-    emoji=discord.PartialEmoji.from_str(icon) if icon else None
-    if url:=jump_links.get(name):
-     row.add_item(ui.Button(label=name,url=url,emoji=emoji))
-    else:
-     row.add_item(ui.Button(
-      label=name,emoji=emoji,disabled=True,custom_id=f"pb:directory:unlinked:{index}",
-      style=discord.ButtonStyle.secondary,
-     ))
-   panel.add_item(row)
-  dt2=["### DT2 Bosses"]
-  for name in ("Duke Sucellus","The Leviathan","Vardorvis","The Whisperer"):
-   url=jump_links.get(name)
-   dt2.append(f"{activity_icon(name)}[{name}]({url})" if url else f"{activity_icon(name)}**{name}**")
-  panel.add_item(ui.TextDisplay("\n".join(dt2)))
+  panel.add_item(ui.TextDisplay(title+hint))
+  panel.add_item(ui.TextDisplay(body))
   self.add_item(panel)
-
 
 
 def first_place_section(record,content):
@@ -2128,7 +2103,7 @@ async def restore_staff_proof_cards(guild_id):
 async def publish_missing_added_boss_boards(channel,g,records):
  """Add the new boards to an existing panel without reposting old bosses."""
  tracked={row["activity"] for row in records}
- for activity in ADDED_BOSSES:
+ for activity in sorted(ADDED_BOSSES,key=str.casefold):
   if activity in tracked:
    continue
   try:
@@ -2184,8 +2159,11 @@ def public_board_tail_to_reflow(roots,pages):
   extra.setdefault(page["activity"],[]).append(page["message"])
  closing_keys=(SNAPSHOT_CONTINUATION_KEY,PB_FOOTER_KEY)
  closing=[(key,roots[key]) for key in closing_keys if key in roots]
- ordered=sorted(((key,row) for key,row in roots.items() if key not in closing_keys),
-                key=lambda item:item[1]["message"])+closing
+ names=[key for key in PB_DIRECTORY_ORDER if key in roots]
+ unlisted=sorted(((key,row) for key,row in roots.items()
+                  if key not in closing_keys and key not in PB_DIRECTORY_ORDER),
+                 key=lambda item:item[1]["message"])
+ ordered=[(key,roots[key]) for key in names]+unlisted+closing
  for i,(key,root) in enumerate(ordered):
   ids=[root["message"],*extra.get(key,())]
   following=ordered[i+1][1]["message"] if i+1<len(ordered) else None
@@ -2283,7 +2261,7 @@ async def repair_public_board_order(g):
     logging.warning("Skipped PB reordering because the directory isn't owned by Novus PB")
     return
    if tail:
-    logging.info("Putting PB continuation pages back in channel order starting at %s",tail[0])
+    logging.info("Putting PB boards and continuation pages in directory order starting at %s",tail[0])
     await publish_public_board_tail(channel,g,tail,roots,pages,home)
    boards=await store.boss_boards(g)
    links={r["activity"]:f"https://discord.com/channels/{g}/{ch}/{r['message']}" for r in boards}
@@ -2316,6 +2294,10 @@ async def repair_public_board_order(g):
                  ch,main.id,tfa_pages,adjacent,text.count("[Proof]("),bottom.id,bottom.content==expected_top)
    logging.info("PB continuation channel order verified=%s footer=%s pending_cleanup=%s",
                 valid,new_footer["message"],len(pending))
+   if valid and all(boss in updated_roots for boss in ADDED_BOSSES):
+    logging.info("Verified new PB boards in channel order: %s",
+                 [(boss,updated_roots[boss]["message"])
+                  for boss in PB_DIRECTORY_ORDER if boss in ADDED_BOSSES])
   except (discord.HTTPException,aiosqlite.Error):
    logging.exception("Unable to restore chronological PB board order")
 
@@ -4291,9 +4273,9 @@ async def pbpanel(i:discord.Interaction):
    )
    jump_links[activity]=board_msg.jump_url
 
-  # Then the remaining bosses beginning with Alchemical Hydra.
-  for activity in BOSSES:
-   if activity in ("Inferno","Fortis Colosseum","Fight Caves"):
+  # Then the remaining bosses in the same order as the Boss Directory.
+  for activity in PB_DIRECTORY_ORDER:
+   if activity not in BOSSES or activity in ("Inferno","Fortis Colosseum","Fight Caves"):
     continue
    board_msg=await write_linked_board(i.channel,i.guild_id,activity)
    await store.set_boss_board(

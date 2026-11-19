@@ -23,26 +23,47 @@ class AddedBossesLayoutTests(TestCase):
         self.assertEqual(bot.ACTIVITY_EMOJIS["Nex"], "nex")
         self.assertEqual(bot.ACTIVITY_EMOJIS["The Hueycoatl"], "huey")
 
-    def test_live_directory_bosses_are_alphabetical_link_buttons_with_exact_emoji_ids(self):
+    def test_full_live_directory_has_all_text_links_and_exact_added_icons(self):
         links = {name: f"https://discord.com/channels/1532817291048124466/1568280192936443934/{10**18+i}"
                  for i, name in enumerate((*bot.BOSSES, *bot.RAIDS))}
         guild = SimpleNamespace(id=bot.NOVUS_GUILD_ID, emojis=[])
+        emotes = {emoji.casefold(): f"<:{emoji}:{10**18+i}>"
+                  for i, emoji in enumerate(bot.ACTIVITY_EMOJIS.values())}
         with (patch.object(bot, "GUILD_ID", guild.id),
-              patch.object(bot.bot, "get_guild", return_value=guild)):
+              patch.object(bot.bot, "get_guild", return_value=guild),
+              patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild.id: emotes})):
             view = bot.BossDirectory(links)
-        buttons = [item for item in view.walk_children() if isinstance(item, bot.ui.Button)]
-        labels = [button.label for button in buttons]
-        self.assertEqual(labels, sorted(labels, key=str.casefold))
-        self.assertIn("### Bosses", [item.content for item in view.walk_children()
-                                     if isinstance(item, bot.ui.TextDisplay)])
+        items = list(view.walk_children())
+        self.assertFalse(any(isinstance(item, bot.ui.Button) for item in items))
+        body = "\n".join(item.content for item in items if isinstance(item, bot.ui.TextDisplay))
         self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
-        self.assertLessEqual(len(list(view.walk_children())), 40)
-        expected = {"Hespori": 1572891309214142504, "Amoxliatl": 1572891310992527431,
-                    "Nex": 1533163395136884848, "The Hueycoatl": 1533163524858183860}
-        for button in buttons:
-            self.assertEqual(button.url, links[button.label])
-            if button.label in expected:
-                self.assertEqual(button.emoji.id, expected[button.label])
+        for name, url in links.items():
+            self.assertIn(f"[{bot.RAID_LABELS.get(name, name)}]({url})", body)
+        expected = {"Hespori": "<:hespori:1572891309214142504>",
+                    "Amoxliatl": "<:amoxliatl:1572891310992527431>",
+                    "Nex": "<:Nex:1533163395136884848>",
+                    "The Hueycoatl": "<:Huey:1533163524858183860>"}
+        for name, emoji in expected.items():
+            self.assertIn(f"{emoji} [{name}]({links[name]})", body)
+        boss_lines = body.split("### Bosses\n", 1)[1].split("### DT2 Bosses", 1)[0].splitlines()
+        labels = [line.split("[", 1)[1].split("]", 1)[0] for line in boss_lines]
+        self.assertEqual(labels, sorted(labels, key=str.casefold))
+        self.assertEqual(set(bot.PB_DIRECTORY_ORDER), set(links))
+
+    def test_reflow_interleaves_the_new_boards_and_keeps_the_existing_prefix(self):
+        roots = {name: {"message": 10+i} for i, name in enumerate((
+            "Inferno", "The Fractured Archive", "Alchemical Hydra", "Corrupted Gauntlet",
+            "Mad Angel", "Zulrah", "Duke Sucellus", "Hespori", "Amoxliatl", "Nex",
+            "The Hueycoatl", bot.SNAPSHOT_CONTINUATION_KEY, bot.PB_FOOTER_KEY,
+        ))}
+        expected = [
+            "Corrupted Gauntlet", "Hespori", "Mad Angel", "Nex", "The Hueycoatl",
+            "Zulrah", "Duke Sucellus", bot.SNAPSHOT_CONTINUATION_KEY, bot.PB_FOOTER_KEY,
+        ]
+        self.assertEqual(bot.public_board_tail_to_reflow(roots, []), expected)
+        for i, name in enumerate(expected, 100):
+            roots[name]["message"] = i
+        self.assertEqual(bot.public_board_tail_to_reflow(roots, []), [])
 
     def test_supported_brackets_are_selectable_and_directory_has_all_four(self):
         modal = bot.SubmitModal()
@@ -55,9 +76,9 @@ class AddedBossesLayoutTests(TestCase):
                 self.assertEqual(bot.BOSSES[name], variants)
                 links = {name: "https://example.com/boss"}
                 directory = bot.BossDirectory(links)
-                self.assertTrue(any(item.label == name and item.url == links[name]
+                self.assertTrue(any(f"[{name}]({links[name]})" in item.content
                                     for item in directory.walk_children()
-                                    if isinstance(item, bot.ui.Button)))
+                                    if isinstance(item, bot.ui.TextDisplay)))
         for name, variant, size in BRACKETS:
             with self.subTest(boss=name, variant=variant):
                 self.assertEqual(bot.team_size("Bosses", variant, name), size)
