@@ -269,6 +269,12 @@ ACTIVITY_EMOJIS={
 }
 
 ACTIVITY_EMOJI_CACHE={}
+NOVUS_ADDED_BOSS_EMOJIS={
+ "The Hueycoatl":"<:Huey:1533163524858183860>",
+ "Nex":"<:Nex:1533163395136884848>",
+ "Amoxliatl":"<:amoxliatl:1572891310992527431>",
+ "Hespori":"<:hespori:1572891309214142504>",
+}
 PB_PODIUM_FALLBACK={1:"#1",2:"#2",3:"#3"}
 NOVUS_PB_TROPHY_IDS={
  1:1572259759548272752,
@@ -332,6 +338,8 @@ def activity_icon(activity):
  if not name:return ""
  guild=bot.get_guild(GUILD_ID) if GUILD_ID else (bot.guilds[0] if bot.guilds else None)
  if not guild:return ""
+ if guild.id==NOVUS_GUILD_ID and activity in NOVUS_ADDED_BOSS_EMOJIS:
+  return NOVUS_ADDED_BOSS_EMOJIS[activity]+" "
  resolved=ACTIVITY_EMOJI_CACHE.get(guild.id,{}).get(name.casefold())
  if not resolved:
   emoji=next((e for e in guild.emojis if e.name.casefold()==name.casefold()),None)
@@ -965,11 +973,13 @@ async def on_ready():
     await paced_startup_edit(message, view=BossDirectory(jump_links),allowed_mentions=discord.AllowedMentions.none())
     if guild.id==NOVUS_GUILD_ID:
      published=await ch.fetch_message(message.id)
-     body=old_announcement_text(published)
-     logging.info("Verified added boss directory links: %s; team boss emojis: %s",
-                  [boss for boss in ADDED_BOSSES if boss in jump_links and jump_links[boss] in body],
-                  [boss for boss in TEAM_BOSS_SIZES
-                   if (icon:=activity_icon(boss)) and f"{icon}[{boss}]" in body])
+     buttons={item.label:item for item in ui.LayoutView.from_message(published).walk_children()
+              if isinstance(item,ui.Button) and item.url}
+     logging.info("Verified added boss directory links: %s; custom emojis: %s",
+                  [boss for boss in ADDED_BOSSES
+                   if boss in buttons and buttons[boss].url==jump_links.get(boss)],
+                  [boss for boss in ADDED_BOSSES
+                   if boss in buttons and str(buttons[boss].emoji)==NOVUS_ADDED_BOSS_EMOJIS[boss]])
    except (discord.HTTPException,aiosqlite.Error):
     logging.exception("Failed to refresh PB directory emojis")
   # Update the existing home panel with the latest heading and points.
@@ -1566,15 +1576,6 @@ class BossDirectory(PBLayoutView):
    ("Slayer Bosses",[
     "Alchemical Hydra","Araxxor","Grotesque Guardians"
    ]),
-   ("Solo & Duo Bosses",[
-    "Amoxliatl","Gauntlet","Corrupted Gauntlet","Doom of Mokhaiotl","Demonic Brutus","Hespori",
-    "Mad Angel","Maggot King","Phantom Muspah","Phosani's Nightmare",
-    "Royal Titans","Vorkath","Yama","Zulrah"
-   ]),
-   ("Group Bosses",list(TEAM_BOSS_SIZES)),
-   ("DT2 Bosses",[
-    "Duke Sucellus","The Leviathan","Vardorvis","The Whisperer"
-   ])
   ]
 
   for heading,names in remaining_groups:
@@ -1587,9 +1588,32 @@ class BossDirectory(PBLayoutView):
      else f"{activity_icon(name)}**{name}**"
     )
 
-  panel.add_item(
-   ui.TextDisplay("\n".join(lines))
-  )
+  panel.add_item(ui.TextDisplay("\n".join(lines)))
+  panel.add_item(ui.TextDisplay("### Bosses"))
+  names=sorted((
+   "Gauntlet","Corrupted Gauntlet","Doom of Mokhaiotl","Demonic Brutus",
+   "Mad Angel","Maggot King","Phantom Muspah","Phosani's Nightmare",
+   "Royal Titans","Vorkath","Yama","Zulrah",*ADDED_BOSSES,
+  ),key=str.casefold)
+  # Link buttons avoid exceeding Discord's combined Text Display budget.
+  for start in range(0,len(names),4):
+   row=ui.ActionRow()
+   for index,name in enumerate(names[start:start+4],start):
+    icon=activity_icon(name).strip()
+    emoji=discord.PartialEmoji.from_str(icon) if icon else None
+    if url:=jump_links.get(name):
+     row.add_item(ui.Button(label=name,url=url,emoji=emoji))
+    else:
+     row.add_item(ui.Button(
+      label=name,emoji=emoji,disabled=True,custom_id=f"pb:directory:unlinked:{index}",
+      style=discord.ButtonStyle.secondary,
+     ))
+   panel.add_item(row)
+  dt2=["### DT2 Bosses"]
+  for name in ("Duke Sucellus","The Leviathan","Vardorvis","The Whisperer"):
+   url=jump_links.get(name)
+   dt2.append(f"{activity_icon(name)}[{name}]({url})" if url else f"{activity_icon(name)}**{name}**")
+  panel.add_item(ui.TextDisplay("\n".join(dt2)))
   self.add_item(panel)
 
 
