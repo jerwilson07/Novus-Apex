@@ -19,6 +19,10 @@ BRACKETS = (
 
 
 class AddedBossesLayoutTests(TestCase):
+    def test_team_bosses_use_novus_server_emoji_names(self):
+        self.assertEqual(bot.ACTIVITY_EMOJIS["Nex"], "nex")
+        self.assertEqual(bot.ACTIVITY_EMOJIS["The Hueycoatl"], "huey")
+
     def test_supported_brackets_are_selectable_and_directory_has_all_four(self):
         modal = bot.SubmitModal()
         for select in (modal.target_select, modal.format_select, modal.boss_select):

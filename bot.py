@@ -261,7 +261,7 @@ ACTIVITY_EMOJIS={
  "Yama":"yama",
  "Zulrah":"zulrah",
  "Nex":"nex",
- "The Hueycoatl":"hueycoatl",
+ "The Hueycoatl":"huey",
  "Duke Sucellus":"duke_sucellus",
  "The Leviathan":"leviathan",
  "Vardorvis":"vardorvis",
@@ -966,8 +966,10 @@ async def on_ready():
     if guild.id==NOVUS_GUILD_ID:
      published=await ch.fetch_message(message.id)
      body=old_announcement_text(published)
-     logging.info("Verified added boss directory links: %s",
-                  [boss for boss in ADDED_BOSSES if boss in jump_links and jump_links[boss] in body])
+     logging.info("Verified added boss directory links: %s; team boss emojis: %s",
+                  [boss for boss in ADDED_BOSSES if boss in jump_links and jump_links[boss] in body],
+                  [boss for boss in TEAM_BOSS_SIZES
+                   if (icon:=activity_icon(boss)) and f"{icon}[{boss}]" in body])
    except (discord.HTTPException,aiosqlite.Error):
     logging.exception("Failed to refresh PB directory emojis")
   # Update the existing home panel with the latest heading and points.
