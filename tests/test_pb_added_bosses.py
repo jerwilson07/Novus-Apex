@@ -19,6 +19,40 @@ BRACKETS = (
 
 
 class AddedBossesLayoutTests(TestCase):
+    def test_split_directory_keeps_every_icon_and_link_under_each_messages_limit(self):
+        guild = SimpleNamespace(id=bot.NOVUS_GUILD_ID, emojis=[])
+        links = {name: f"https://discord.com/channels/{guild.id}/1568280192936443934/{10**18+i}"
+                 for i, name in enumerate(bot.PB_DIRECTORY_ORDER)}
+        emojis = {emoji.casefold(): f"<:{emoji}:{10**18+i}>"
+                  for i, emoji in enumerate(bot.ACTIVITY_EMOJIS.values())}
+        points = [dict(rank=i, member_id=10**18+i, points=20-i, firsts=3, seconds=1, thirds=1)
+                  for i in range(1, 11)]
+        with (patch.object(bot, "GUILD_ID", guild.id),
+              patch.object(bot.bot, "get_guild", return_value=guild),
+              patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild.id: emojis})):
+            first = bot.Home(points,guild_id=guild.id,directory_links=links)
+            second = bot.BossDirectory(links,page=2)
+            ordinary = bot.Home(points,guild_id=guild.id)
+        def display_text(container):
+            return "\n".join(item.content for item in container.children if isinstance(item,bot.ui.TextDisplay))
+        top, directory = first.children
+        self.assertEqual(display_text(top), display_text(ordinary.children[0]))
+        self.assertEqual(len(ordinary.children), 1)
+        first_part = display_text(directory)
+        second_part = display_text(second.children[0])
+        self.assertEqual([s for s in first_part.splitlines() if s.startswith("### ")],
+                         ["### Minigames","### Raids","### Slayer Bosses"])
+        self.assertEqual([s for s in second_part.splitlines() if s.startswith("### ")],
+                         ["### Bosses","### DT2 Bosses"])
+        for name,url in links.items():
+            comes_first = name in bot.PB_DIRECTORY_FIRST_ACTIVITIES
+            part,other = (first_part,second_part) if comes_first else (second_part,first_part)
+            icon = bot.NOVUS_ADDED_BOSS_EMOJIS.get(name,emojis[bot.ACTIVITY_EMOJIS[name].casefold()])
+            self.assertIn(f"{icon} [{bot.RAID_LABELS.get(name,name)}]({url})",part)
+            self.assertNotIn(url,other)
+        self.assertLessEqual(bot.pb_view_text_units(first), bot.PB_PUBLIC_TEXT_LIMIT)
+        self.assertLessEqual(bot.pb_view_text_units(second), bot.PB_PUBLIC_TEXT_LIMIT)
+
     def test_team_bosses_use_novus_server_emoji_names(self):
         self.assertEqual(bot.ACTIVITY_EMOJIS["Nex"], "nex")
         self.assertEqual(bot.ACTIVITY_EMOJIS["The Hueycoatl"], "huey")

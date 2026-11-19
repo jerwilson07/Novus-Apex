@@ -92,6 +92,7 @@ PB_DIRECTORY_GROUPS=(
  ("DT2 Bosses",("Duke Sucellus","The Leviathan","Vardorvis","The Whisperer")),
 )
 PB_DIRECTORY_ORDER=tuple(name for _,names in PB_DIRECTORY_GROUPS for name in names)
+PB_DIRECTORY_FIRST_ACTIVITIES=frozenset(name for _,names in PB_DIRECTORY_GROUPS[:3] for name in names)
 ROYAL_TITANS_35_PARTNER="What A Piety"
 royal_titans_35_partner_id=None
 
@@ -986,8 +987,8 @@ async def on_ready():
     message=await ch.fetch_message(directory["message"])
     if guild.id==NOVUS_GUILD_ID and message.author.id==bot.user.id:
      records=await publish_missing_added_boss_boards(ch,guild.id,records)
-    jump_links={r["activity"]:f"https://discord.com/channels/{guild.id}/{r['channel']}/{r['message']}" for r in records}
-    await paced_startup_edit(message, view=BossDirectory(jump_links),allowed_mentions=discord.AllowedMentions.none())
+    jump_links=pb_directory_links(guild.id,records)
+    await paced_startup_edit(message, view=BossDirectory(jump_links,page=2 if guild.id==NOVUS_GUILD_ID else None),allowed_mentions=discord.AllowedMentions.none())
     if guild.id==NOVUS_GUILD_ID:
      published=await ch.fetch_message(message.id)
      body=old_announcement_text(published)
@@ -996,6 +997,10 @@ async def on_ready():
                   [boss for boss,link in links.items() if link in body],
                   [boss for boss,link in links.items()
                    if f"{NOVUS_ADDED_BOSS_EMOJIS[boss]} {link}" in body])
+     logging.info("Verified DT2 directory text links with icons: %s",
+                  [name for name in dict(PB_DIRECTORY_GROUPS)["DT2 Bosses"]
+                   if name in jump_links and (icon:=activity_icon(name))
+                   and f"{icon}[{name}]({jump_links[name]})" in body])
    except (discord.HTTPException,aiosqlite.Error):
     logging.exception("Failed to refresh PB directory emojis")
   # Update the existing home panel with the latest heading and points.
@@ -1005,10 +1010,18 @@ async def on_ready():
     ch=bot.get_channel(home["channel"]) or await bot.fetch_channel(home["channel"])
     message=await ch.fetch_message(home["message"])
     points=await calculate_pb_points(guild.id)
-    view=await Home.for_points(guild.id,points)
+    view=await public_home_view(guild.id,points=points,records=records,directory=directory)
     await paced_startup_edit(message, **view.edit_options(message),allowed_mentions=discord.AllowedMentions.none())
     confirmed=await ch.fetch_message(message.id)
-    body=old_announcement_text(confirmed)
+    body=old_announcement_text(confirmed,components=confirmed.components[:1])
+    if guild.id==NOVUS_GUILD_ID and directory:
+     part_one=old_announcement_text(confirmed,components=confirmed.components[1:])
+     headings=[line for line in part_one.splitlines() if line.startswith("### ")]
+     adjacent=[msg.id async for msg in ch.history(
+      after=discord.Object(id=confirmed.id),oldest_first=True,limit=1
+     )]==[directory["message"]]
+     logging.info("Verified split PB directory: first_part=%s adjacent=%s first_message=%s second_message=%s",
+                  headings,adjacent,confirmed.id,directory["message"])
     standings=body.splitlines()
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
@@ -1197,7 +1210,7 @@ async def on_ready():
    try:
     channel=bot.get_channel(tracked["channel"]) or await bot.fetch_channel(tracked["channel"])
     message=await channel.fetch_message(tracked["message"])
-    view=await Home.make(tracked["guild"])
+    view=await public_home_view(tracked["guild"])
     await paced_startup_edit(message,
      **view.edit_options(message),
      allowed_mentions=discord.AllowedMentions.none()
@@ -1236,7 +1249,7 @@ class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
   await i.response.defer(ephemeral=True)
 
 
-def top10_standings_parts(points,guild_id):
+def top10_standings_parts(points,guild_id,*,text_limit=4000):
  footer=top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True)
 
  def row(entry,names):
@@ -1252,7 +1265,7 @@ def top10_standings_parts(points,guild_id):
   return ("\n".join(rows[:split]),rest) if split else (rest,)
 
  def fits(parts):
-  return len((PB_TOP10_TITLE+"".join(parts)).encode("utf-16-le"))//2<=4000
+  return len((PB_TOP10_TITLE+"".join(parts)).encode("utf-16-le"))//2<=text_limit
 
  rows=[row(entry,f"<@{entry['member_id']}>") for entry in points]
  parts=render(rows or ["-# No approved PB points yet."],[entry["rank"] for entry in points])
@@ -1282,7 +1295,7 @@ def top10_standings_text(points,guild_id):
 
 
 class Home(PBLayoutView):
- def __init__(self,points=None,*,guild_id=None,podium=None):
+ def __init__(self,points=None,*,guild_id=None,podium=None,directory_links=None):
   super().__init__(timeout=None)
   points=points or []
   self.podium_image=podium
@@ -1291,7 +1304,10 @@ class Home(PBLayoutView):
    self.podium_filename=PODIUM_ANIMATED
   elif podium and podium.startswith((b"GIF87a",b"GIF89a")):
    self.podium_filename=PODIUM_GIF
-  self.standing_parts=top10_standings_parts(points,guild_id)
+  directory_card=boss_directory_card(directory_links,page=1) if directory_links is not None else None
+  directory_units=(sum(len(item.content.encode("utf-16-le"))//2 for item in directory_card.children)
+                   if directory_card is not None else 0)
+  self.standing_parts=top10_standings_parts(points,guild_id,text_limit=4000-directory_units)
 
   hero=ui.Container(accent_colour=GOLD)
   banner=ui.MediaGallery()
@@ -1344,13 +1360,15 @@ class Home(PBLayoutView):
   hero.add_item(actions)
 
   self.add_item(hero)
+  if directory_card is not None:
+   self.add_item(directory_card)
 
  @classmethod
  async def make(cls,g):
   return await cls.for_points(g,await calculate_pb_points(g))
 
  @classmethod
- async def for_points(cls,g,points):
+ async def for_points(cls,g,points,*,directory_links=None):
   podium=None
   leaders=[row for row in points if row["rank"]<=3]
   # The podium requires three distinct ranked slots.
@@ -1365,7 +1383,7 @@ class Home(PBLayoutView):
       podium=await asyncio.to_thread(render_podium,leaders,names)
    except (discord.HTTPException,OSError,ValueError):
     logging.exception("Could not render the PB podium; using text standings")
-  return cls(points,guild_id=g,podium=podium)
+  return cls(points,guild_id=g,podium=podium,directory_links=directory_links)
 
  def podium_file(self):
   return discord.File(BytesIO(self.podium_image),filename=self.podium_filename) if self.podium_image is not None else None
@@ -1555,47 +1573,70 @@ def fit_snapshot_panel(leaders,recent):
  )
 
 
-class BossDirectory(PBLayoutView):
- def __init__(self,jump_links=None):
-  super().__init__(timeout=None)
-  jump_links=jump_links or {}
-  title="## Boss Directory"
-  hint="\n-# Select an activity to jump to its leaderboard."
-  groups=PB_DIRECTORY_GROUPS
-  icons={name:activity_icon(name) for _,names in groups for name in names}
-  def render():
-   lines=[]
-   for heading,names in groups:
-    lines.append(f"### {heading}")
-    for name in names:
-     label=RAID_LABELS.get(name,name)
-     url=jump_links.get(name)
-     link=f"[{label}]({url})" if url else f"**{label}**"
-     lines.append(icons[name]+link)
-   return "\n".join(lines)
+def pb_directory_links(g,records):
+ return {r["activity"]:f"https://discord.com/channels/{g}/{r['channel']}/{r['message']}"
+         for r in records}
 
-  body=render()
-  def fits(heading,text):
-   return len((heading+text).encode("utf-16-le"))//2<=PB_PUBLIC_TEXT_LIMIT
 
-  # Keep the links and new custom emojis on the same live directory message.
-  # When it gets tight, drop the hint and then decorative icons by group.
-  if not fits(title+hint,body):
-   hint=""
-   priority=("DT2 Bosses","Minigames","Slayer Bosses","Raids","Bosses")
-   grouped=dict(groups)
-   for heading in priority:
-    if fits(title,body):
-     break
-    for name in grouped[heading]:
-     if name not in NOVUS_ADDED_BOSS_EMOJIS:
-      icons[name]=""
-    body=render()
+async def public_home_view(g,*,points=None,records=None,directory=None):
+ if g!=NOVUS_GUILD_ID:
+  return await (Home.make(g) if points is None else Home.for_points(g,points))
+ if directory is None:
+  directory=await store.boss_panel(g)
+ links=None
+ if directory:
+  links=pb_directory_links(g,await store.boss_boards(g) if records is None else records)
+ return await Home.for_points(g,await calculate_pb_points(g) if points is None else points,
+                              directory_links=links)
 
-  panel=ui.Container(accent_colour=BLUE)
+
+def boss_directory_card(jump_links=None,*,page=None):
+ jump_links=jump_links or {}
+ # Use the two adjacent existing messages: page one follows the points card
+ # and page two occupies the existing standalone directory message.
+ groups={1:PB_DIRECTORY_GROUPS[:3],2:PB_DIRECTORY_GROUPS[3:]}.get(page,PB_DIRECTORY_GROUPS)
+ title="## Boss Directory"
+ hint="\n-# Select an activity to jump to its leaderboard."
+ icons={name:activity_icon(name) for _,names in groups for name in names}
+ def render():
+  lines=[]
+  for heading,names in groups:
+   lines.append(f"### {heading}")
+   for name in names:
+    label=RAID_LABELS.get(name,name)
+    url=jump_links.get(name)
+    link=f"[{label}]({url})" if url else f"**{label}**"
+    lines.append(icons[name]+link)
+  return "\n".join(lines)
+
+ body=render()
+ def fits(heading,text):
+  return len((heading+text).encode("utf-16-le"))//2<=PB_PUBLIC_TEXT_LIMIT
+
+ # Keep single-message directories on other servers within Discord's budget.
+ if page is None and not fits(title+hint,body):
+  hint=""
+  priority=("DT2 Bosses","Minigames","Slayer Bosses","Raids","Bosses")
+  grouped=dict(groups)
+  for heading in priority:
+   if fits(title,body):
+    break
+   for name in grouped[heading]:
+    if name not in NOVUS_ADDED_BOSS_EMOJIS:
+     icons[name]=""
+   body=render()
+
+ panel=ui.Container(accent_colour=BLUE)
+ if page!=2:
   panel.add_item(ui.TextDisplay(title+hint))
-  panel.add_item(ui.TextDisplay(body))
-  self.add_item(panel)
+ panel.add_item(ui.TextDisplay(body))
+ return panel
+
+
+class BossDirectory(PBLayoutView):
+ def __init__(self,jump_links=None,*,page=None):
+  super().__init__(timeout=None)
+  self.add_item(boss_directory_card(jump_links,page=page))
 
 
 def first_place_section(record,content):
@@ -2269,8 +2310,13 @@ async def repair_public_board_order(g):
     logging.info("Putting PB boards and continuation pages in directory order starting at %s",tail[0])
     await publish_public_board_tail(channel,g,tail,roots,pages,home)
    boards=await store.boss_boards(g)
-   links={r["activity"]:f"https://discord.com/channels/{g}/{ch}/{r['message']}" for r in boards}
-   await directory_msg.edit(view=BossDirectory(links),allowed_mentions=discord.AllowedMentions.none())
+   links=pb_directory_links(g,boards)
+   mentions=discord.AllowedMentions.none()
+   await directory_msg.edit(view=BossDirectory(links,page=2),allowed_mentions=mentions)
+   if retired or PB_DIRECTORY_FIRST_ACTIVITIES.intersection(tail):
+    home_msg=await channel.fetch_message(home["message"])
+    view=await public_home_view(g,records=boards,directory=directory)
+    await home_msg.edit(**view.edit_options(home_msg),allowed_mentions=mentions)
    for old in await store.superseded_public_posts(g,ch):
     try:
      await delete_public_board_post(channel,old["message"])
@@ -2745,7 +2791,7 @@ async def refresh_panel(g,activity=None):
   try:
    ch=bot.get_channel(home["channel"]) or await bot.fetch_channel(home["channel"])
    msg=await ch.fetch_message(home["message"])
-   view=await Home.make(g)
+   view=await public_home_view(g)
    await msg.edit(
     **view.edit_options(msg),
     allowed_mentions=discord.AllowedMentions.none()
@@ -3178,7 +3224,7 @@ def count_runner_up_trophies(message,guild_id):
  )
 
 
-def old_announcement_text(message):
+def old_announcement_text(message,*,components=None):
  """Extract text from a Discord Components V2 announcement, including containers."""
  chunks=[]
  def walk(item):
@@ -3187,7 +3233,7 @@ def old_announcement_text(message):
    chunks.append(content)
   for child in getattr(item,"children",()) or ():
    walk(child)
- for component in getattr(message,"components",()) or ():
+ for component in (getattr(message,"components",()) or ()) if components is None else components:
   walk(component)
  return "\n".join(chunks)
 
@@ -4257,7 +4303,8 @@ async def pbpanel(i:discord.Interaction):
   panel_msg=await i.channel.send(**view.send_options())
 
   # Post a temporary directory first so it stays above the leaderboards.
-  boss_msg=await i.channel.send(view=BossDirectory())
+  split_directory=i.guild_id==NOVUS_GUILD_ID
+  boss_msg=await i.channel.send(view=BossDirectory(page=2 if split_directory else None))
 
   jump_links={}
 
@@ -4298,9 +4345,12 @@ async def pbpanel(i:discord.Interaction):
 
   # Turn each boss name into a native Discord jump link.
   await boss_msg.edit(
-   view=BossDirectory(jump_links),
+   view=BossDirectory(jump_links,page=2 if split_directory else None),
    allowed_mentions=discord.AllowedMentions.none()
   )
+  if split_directory:
+   view=await Home.for_points(i.guild_id,await calculate_pb_points(i.guild_id),directory_links=jump_links)
+   await panel_msg.edit(**view.edit_options(panel_msg),allowed_mentions=discord.AllowedMentions.none())
 
   async with PUBLIC_PROOF_LOCK:
    leaders={raid:await store.raid_top3(i.guild_id,raid) for raid in RAIDS}
