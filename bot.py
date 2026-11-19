@@ -50,17 +50,20 @@ RAID_LABELS={
  "Chambers of Xeric":"CoX",
  "Tombs of Amascut":"ToA",
 }
+TEAM_BOSS_SIZES={"Nex":{"Duo":2,"Trio":3},"The Hueycoatl":{"Trio":3,"5-Man":5}}
 BOSSES={
  "Inferno":["Standard"],
  "Fortis Colosseum":["Standard"],
  "Fight Caves":["Standard"],
  "Alchemical Hydra":["Standard"],
+ "Amoxliatl":["Standard"],
  "Araxxor":["Standard"],
  "Grotesque Guardians":["Standard"],
  "Gauntlet":["Standard"],
  "Corrupted Gauntlet":["Standard"],
  "Doom of Mokhaiotl":["Standard"],
  "Demonic Brutus":["Standard"],
+ "Hespori":["Standard"],
  "Mad Angel":["Standard"],
  "Maggot King":["Standard"],
  "Phantom Muspah":["Standard"],
@@ -69,17 +72,19 @@ BOSSES={
  "Vorkath":["Standard"],
  "Yama":["Standard"],
  "Zulrah":["Standard"],
+ **{activity:list(sizes) for activity,sizes in TEAM_BOSS_SIZES.items()},
  "Duke Sucellus":["Normal","Awakened"],
  "The Leviathan":["Normal","Awakened"],
  "Vardorvis":["Normal","Awakened"],
  "The Whisperer":["Normal","Awakened"]}
 CATS={"Raids":RAIDS,"Bosses":BOSSES}
 NON_SOLO_BOSSES={"Yama","Royal Titans"}
+ADDED_BOSSES=("Hespori","Amoxliatl",*TEAM_BOSS_SIZES)
 ROYAL_TITANS_35_PARTNER="What A Piety"
 royal_titans_35_partner_id=None
 
 def solo_boss_variant(activity,variant):
- return activity not in NON_SOLO_BOSSES
+ return team_size("Bosses",variant,activity)==1
 PB_EARLIEST_DATE=datetime(2026,11,7).date()
 
 def pb_date_eligible(value):
@@ -239,12 +244,14 @@ ACTIVITY_EMOJIS={
  "Fortis Colosseum":"sol_heredit",
  "Fight Caves":"jad",
  "Alchemical Hydra":"hydra",
+ "Amoxliatl":"amoxliatl",
  "Araxxor":"araxxor",
  "Grotesque Guardians":"dawn",
  "Gauntlet":"crystalline_hunllef",
  "Corrupted Gauntlet":"corrupted_hunllef",
  "Doom of Mokhaiotl":"doom",
  "Demonic Brutus":"demonic_brutus",
+ "Hespori":"hespori",
  "Mad Angel":"mad_angel",
  "Maggot King":"maggot_king",
  "Phantom Muspah":"muspah",
@@ -253,6 +260,8 @@ ACTIVITY_EMOJIS={
  "Vorkath":"vorkath",
  "Yama":"yama",
  "Zulrah":"zulrah",
+ "Nex":"nex",
+ "The Hueycoatl":"hueycoatl",
  "Duke Sucellus":"duke_sucellus",
  "The Leviathan":"leviathan",
  "Vardorvis":"vardorvis",
@@ -380,6 +389,8 @@ def canonical_raid_variant(category,activity,variant):
 
 def team_size(cat,variant,activity=None):
  if cat=="Bosses":
+  if activity in TEAM_BOSS_SIZES:
+   return TEAM_BOSS_SIZES[activity].get(variant)
   return None if activity in NON_SOLO_BOSSES else 1
  if "Solo" in variant:return 1
  if "Duo" in variant:return 2
@@ -943,14 +954,21 @@ async def on_ready():
   if guild.id==NOVUS_GUILD_ID:
    start_logged_task(refresh_royal_titans_35_review_once(),name="pb-royal-titans-review")
   records=await store.boss_boards(guild.id)
-  jump_links={r["activity"]:f"https://discord.com/channels/{guild.id}/{r['channel']}/{r['message']}" for r in records}
   directory=await store.boss_panel(guild.id)
   if directory:
    try:
     ch=bot.get_channel(directory["channel"]) or await bot.fetch_channel(directory["channel"])
     message=await ch.fetch_message(directory["message"])
+    if guild.id==NOVUS_GUILD_ID and message.author.id==bot.user.id:
+     records=await publish_missing_added_boss_boards(ch,guild.id,records)
+    jump_links={r["activity"]:f"https://discord.com/channels/{guild.id}/{r['channel']}/{r['message']}" for r in records}
     await paced_startup_edit(message, view=BossDirectory(jump_links),allowed_mentions=discord.AllowedMentions.none())
-   except discord.HTTPException:
+    if guild.id==NOVUS_GUILD_ID:
+     published=await ch.fetch_message(message.id)
+     body=old_announcement_text(published)
+     logging.info("Verified added boss directory links: %s",
+                  [boss for boss in ADDED_BOSSES if boss in jump_links and jump_links[boss] in body])
+   except (discord.HTTPException,aiosqlite.Error):
     logging.exception("Failed to refresh PB directory emojis")
   # Update the existing home panel with the latest heading and points.
   home=await store.panel(guild.id)
@@ -1388,8 +1406,9 @@ def snapshot_team_line(r):
 def recent_pb_title(activity,variant):
  title=RAID_LABELS.get(activity,activity)
  dt2_mode=variant in ("Normal","Awakened") and variant in BOSSES.get(activity,())
+ boss_size=variant in TEAM_BOSS_SIZES.get(activity,())
  raid_mode=variant in RAIDS.get(activity,()) and variant not in REGULAR_RAID_SIZES
- return " · ".join(map(clean,(title,variant))) if dt2_mode or raid_mode else clean(title)
+ return " · ".join(map(clean,(title,variant))) if dt2_mode or boss_size or raid_mode else clean(title)
 
 
 class SnapshotPanel(PBLayoutView):
@@ -1546,10 +1565,11 @@ class BossDirectory(PBLayoutView):
     "Alchemical Hydra","Araxxor","Grotesque Guardians"
    ]),
    ("Solo & Duo Bosses",[
-    "Gauntlet","Corrupted Gauntlet","Doom of Mokhaiotl","Demonic Brutus",
+    "Amoxliatl","Gauntlet","Corrupted Gauntlet","Doom of Mokhaiotl","Demonic Brutus","Hespori",
     "Mad Angel","Maggot King","Phantom Muspah","Phosani's Nightmare",
     "Royal Titans","Vorkath","Yama","Zulrah"
    ]),
+   ("Group Bosses",list(TEAM_BOSS_SIZES)),
    ("DT2 Bosses",[
     "Duke Sucellus","The Leviathan","Vardorvis","The Whisperer"
    ])
@@ -1642,7 +1662,7 @@ def board_proof_rows(blocks,*,force_menu=False):
 
 
 class BossLeaderboard(PBLayoutView):
- def __init__(self,activity,blocks):
+ def __init__(self,activity,blocks,*,omit=()):
   super().__init__(timeout=None)
 
   accent=RED if activity in ("Inferno","Fortis Colosseum","Fight Caves") else BLUE
@@ -1658,7 +1678,7 @@ class BossLeaderboard(PBLayoutView):
     panel.add_item(ui.Separator())
    if len(blocks)>1:
     panel.add_item(ui.TextDisplay(f"### {clean(variant)}"))
-   add_featured_ranking(panel,results)
+   add_featured_ranking(panel,results,omit=omit)
 
   self.add_item(panel)
 
@@ -1729,6 +1749,12 @@ class RaidLeaderboard(PBLayoutView):
 
 
 def linked_board_view(factory,activity,blocks,*,show_title=True,text_limit=PB_PUBLIC_TEXT_LIMIT):
+ if activity in TEAM_BOSS_SIZES:
+  return fit_public_proof_links(
+   lambda omit:factory(activity,blocks,omit=omit),
+   ([rows[rank] for _,rows in blocks if rank<len(rows)] for rank in range(5)),
+   activity,text_limit=text_limit,
+  )
  if factory is not RaidLeaderboard:
   return factory(activity,blocks)
  return fit_public_proof_links(
@@ -2073,7 +2099,26 @@ async def restore_staff_proof_cards(guild_id):
  logging.info("PB staff proof card refresh complete for guild %s: restored=%s",guild_id,updated)
 
 
-async def write_linked_board(channel,g,activity,message=None,*,archived_only=False,published=None):
+async def publish_missing_added_boss_boards(channel,g,records):
+ """Add the new boards to an existing panel without reposting old bosses."""
+ tracked={row["activity"] for row in records}
+ for activity in ADDED_BOSSES:
+  if activity in tracked:
+   continue
+  try:
+   board=await write_linked_board(channel,g,activity,silent=True)
+   try:
+    await store.set_boss_board(g,activity,channel.id,board.id)
+   except aiosqlite.Error:
+    await delete_public_board_post(channel,board.id)
+    raise
+   logging.info("Published new PB board %s message=%s variants=%s",activity,board.id,BOSSES[activity])
+  except (discord.HTTPException,aiosqlite.Error):
+   logging.exception("Unable to publish the new PB board for %s",activity)
+ return await store.boss_boards(g)
+
+
+async def write_linked_board(channel,g,activity,message=None,*,archived_only=False,published=None,silent=False):
  factory=BossLeaderboard if activity in BOSSES else RaidLeaderboard
  async with PUBLIC_PROOF_LOCK:
   blocks=await factory.blocks(g,activity)
@@ -2098,7 +2143,7 @@ async def write_linked_board(channel,g,activity,message=None,*,archived_only=Fal
    messages=await publish_raid_board_pages(channel,g,activity,message,blocks,mentions)
   else:
    view=linked_board_view(factory,activity,blocks)
-   saved=(await channel.send(view=view,allowed_mentions=mentions) if message is None
+   saved=(await channel.send(view=view,allowed_mentions=mentions,**({"silent":True} if silent else {})) if message is None
           else await message.edit(view=view,allowed_mentions=mentions,attachments=[]))
    messages=[saved]
   if published is not None:
@@ -2111,11 +2156,16 @@ def public_board_tail_to_reflow(roots,pages):
  extra={}
  for page in sorted(pages,key=lambda row:row["page"]):
   extra.setdefault(page["activity"],[]).append(page["message"])
- ordered=sorted(roots.items(),key=lambda item:item[1]["message"])
+ closing_keys=(SNAPSHOT_CONTINUATION_KEY,PB_FOOTER_KEY)
+ closing=[(key,roots[key]) for key in closing_keys if key in roots]
+ ordered=sorted(((key,row) for key,row in roots.items() if key not in closing_keys),
+                key=lambda item:item[1]["message"])+closing
  for i,(key,root) in enumerate(ordered):
   ids=[root["message"],*extra.get(key,())]
   following=ordered[i+1][1]["message"] if i+1<len(ordered) else None
   if ids!=sorted(set(ids)) or (following is not None and ids[-1]>=following):
+   if following is not None and following<=root["message"] and ids==sorted(set(ids)):
+    return [activity for activity,_ in ordered[i+1:]]
    return [activity for activity,_ in ordered[i:]]
  return []
 
@@ -2126,7 +2176,7 @@ async def public_tail_views(g,key):
   return snapshot_page_plan(leaders,await store.recent_approved(g,3))
  if key in RAIDS:
   return raid_board_page_plan(key,await RaidLeaderboard.blocks(g,key))
- return [("",BossLeaderboard(key,await BossLeaderboard.blocks(g,key)))]
+ return [("",linked_board_view(BossLeaderboard,key,await BossLeaderboard.blocks(g,key)))]
 
 
 async def delete_public_board_post(channel,sid):
@@ -2998,9 +3048,7 @@ def qualifies_for_first_place(new_record, previous_leader, current_ranking):
 
 
 def first_announcement_title(activity,variant):
- if activity in BOSSES and not (
-  variant in ("Normal","Awakened") and variant in BOSSES[activity]
- ):
+ if activity in BOSSES and variant=="Standard":
   return clean(activity)
  return " · ".join(map(clean,(activity,variant))) if variant else clean(activity)
 
@@ -3791,6 +3839,8 @@ async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
   )
  normalized_date=parsed_date.isoformat()
 
+ if variant not in CATS.get(cat,{}).get(act,()):
+  return await i.response.send_message("Choose a listed format for this activity.",ephemeral=True)
  required=team_size(cat,variant,act)
  if not members:
   return await i.response.send_message("Select at least one party member.",ephemeral=True)
@@ -3843,6 +3893,10 @@ def submission_target_options():
   )
   for activity in RAIDS
  ]
+ options.extend(
+  discord.SelectOption(label=activity,value=f"boss|||{activity}")
+  for activity in TEAM_BOSS_SIZES
+ )
  options.append(
   discord.SelectOption(
    label="Boss PB",
@@ -3880,6 +3934,7 @@ def boss_submission_options():
   *[
    discord.SelectOption(label=activity,value=activity)
    for activity in BOSSES
+   if activity not in TEAM_BOSS_SIZES
   ]
  ]
 
@@ -3906,7 +3961,7 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    custom_id="pb:submit:target"
   )
   self.format_select=ui.Select(
-   placeholder="Choose raid format / DT2 mode",
+   placeholder="Choose format or boss mode",
    options=submission_format_options(),
    min_values=1,
    max_values=1,
@@ -3935,17 +3990,17 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
 
   self.add_item(ui.Label(
    text="What are you submitting?",
-   description="Choose one of the four raids or Boss PB.",
+   description="Choose a raid, Nex, The Hueycoatl, or Boss PB for other bosses.",
    component=self.target_select
   ))
   self.add_item(ui.Label(
-   text="Raid format / boss mode",
-   description="Pick a raid format, Normal/Awakened for DT2, or the first option for any other boss.",
+   text="Format / boss mode",
+   description="Choose raid format, size for Nex/Hueycoatl, or DT2 mode. Otherwise use the first option.",
    component=self.format_select
   ))
   self.add_item(ui.Label(
    text="Boss",
-   description="Only used when Boss PB is selected above.",
+   description="Only used for Boss PB. Otherwise choose the first option.",
    component=self.boss_select
   ))
   self.add_item(ui.Label(
@@ -3977,18 +4032,19 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    variant=selected_format
   else:
    category="Bosses"
-   if selected_boss=="__none__":
+   activity=target.split("|||",1)[1] if target.startswith("boss|||") else selected_boss
+   if activity not in BOSSES:
     return await i.response.send_message(
      "Choose which boss the PB is for.",
      ephemeral=True
     )
-   activity=selected_boss
    valid_modes=BOSSES[activity]
    if len(valid_modes)==1:
     variant=valid_modes[0]
    elif selected_format not in valid_modes:
+    choices=" or ".join(f"**{mode}**" for mode in valid_modes)
     return await i.response.send_message(
-     f"Choose **Normal** or **Awakened** for **{activity}**.",
+     f"Choose {choices} for **{activity}**.",
      ephemeral=True
     )
    else:
