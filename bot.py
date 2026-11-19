@@ -1019,6 +1019,7 @@ async def on_ready():
     view=await public_home_view(guild.id,points=points,records=records,directory=directory)
     await paced_startup_edit(message, **view.edit_options(message),allowed_mentions=discord.AllowedMentions.none())
     confirmed=await ch.fetch_message(message.id)
+    rendered_home=ui.LayoutView.from_message(confirmed)
     body=old_announcement_text(confirmed,components=confirmed.components[:1])
     if guild.id==NOVUS_GUILD_ID and directory:
      part_one=old_announcement_text(confirmed,components=confirmed.components[1:])
@@ -1028,6 +1029,13 @@ async def on_ready():
      )]==[directory["message"]]
      logging.info("Verified split PB directory: first_part=%s adjacent=%s first_message=%s second_message=%s",
                   headings,adjacent,confirmed.id,directory["message"])
+     cards=rendered_home.children
+     items=cards[1].children if len(cards)>1 and isinstance(cards[1],ui.Container) else []
+     divider=items[1] if len(items)>1 else None
+     logging.info("Verified PB directory header: blue_divider=%s helper_text_present=%s",
+                  isinstance(divider,ui.MediaGallery) and any(
+                   item.media.url==PB_DIRECTORY_DIVIDER_URL for item in divider.items),
+                  "Select an activity" in part_one)
     standings=body.splitlines()
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
@@ -1041,7 +1049,7 @@ async def on_ready():
     single_heading=standings.count(PB_TOP10_TITLE)==1 and "### TOP 10" not in standings
     ranks=[entry["rank"] for entry in points]
     matches_ranked_rows=body==PB_TOP10_TITLE+"\n"+"\n".join(view.standing_parts)
-    live_parts=list(ui.LayoutView.from_message(confirmed).walk_children())
+    live_parts=list(rendered_home.walk_children())
     # Discord may return gallery uploads only as component media, not in
     # message.attachments. Verify against that media rather than the file list.
     podium_tile=next((tile for item in live_parts if isinstance(item,ui.MediaGallery)
@@ -1311,7 +1319,8 @@ class Home(PBLayoutView):
   elif podium and podium.startswith((b"GIF87a",b"GIF89a")):
    self.podium_filename=PODIUM_GIF
   directory_card=boss_directory_card(directory_links,page=1) if directory_links is not None else None
-  directory_units=(sum(len(item.content.encode("utf-16-le"))//2 for item in directory_card.children)
+  directory_units=(sum(len(item.content.encode("utf-16-le"))//2 for item in directory_card.children
+                       if isinstance(item,ui.TextDisplay))
                    if directory_card is not None else 0)
   self.standing_parts=top10_standings_parts(points,guild_id,text_limit=4000-directory_units)
 
@@ -1602,7 +1611,6 @@ def boss_directory_card(jump_links=None,*,page=None):
  # and page two occupies the existing standalone directory message.
  groups={1:PB_DIRECTORY_GROUPS[:3],2:PB_DIRECTORY_GROUPS[3:]}.get(page,PB_DIRECTORY_GROUPS)
  title="## Boss Directory"
- hint="\n-# Select an activity to jump to its leaderboard."
  icons={name:activity_icon(name) for _,names in groups for name in names}
  def render(sections=groups):
   lines=[]
@@ -1620,8 +1628,7 @@ def boss_directory_card(jump_links=None,*,page=None):
   return len((heading+text).encode("utf-16-le"))//2<=PB_PUBLIC_TEXT_LIMIT
 
  # Keep single-message directories on other servers within Discord's budget.
- if page is None and not fits(title+hint,body):
-  hint=""
+ if page is None and not fits(title,body):
   priority=("DT2 Bosses","Minigames","Slayer Bosses","Raids","Bosses")
   grouped=dict(groups)
   for heading in priority:
@@ -1633,16 +1640,17 @@ def boss_directory_card(jump_links=None,*,page=None):
    body=render()
 
  panel=ui.Container(accent_colour=BLUE)
+ divider=ui.MediaGallery()
+ divider.add_item(media=PB_DIRECTORY_DIVIDER_URL)
  if page==2:
   panel.add_item(ui.TextDisplay(render(groups[:1])))
   # A short, banner-width divider lets the standalone second card take the
   # same responsive media width as the first card without padding its text.
-  divider=ui.MediaGallery()
-  divider.add_item(media=PB_DIRECTORY_DIVIDER_URL)
   panel.add_item(divider)
   panel.add_item(ui.TextDisplay(render(groups[1:])))
  else:
-  panel.add_item(ui.TextDisplay(title+hint))
+  panel.add_item(ui.TextDisplay(title))
+  panel.add_item(divider)
   panel.add_item(ui.TextDisplay(body))
  return panel
 

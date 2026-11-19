@@ -51,6 +51,10 @@ class AddedBossesLayoutTests(TestCase):
         def display_text(container):
             return "\n".join(item.content for item in container.children if isinstance(item,bot.ui.TextDisplay))
         top, directory = first.children
+        title, divider, entries = directory.children
+        self.assertEqual(title.content, "## Boss Directory")
+        self.assertEqual(divider.items[0].media.url, bot.PB_DIRECTORY_DIVIDER_URL)
+        self.assertNotIn("Select an activity", entries.content)
         self.assertEqual(display_text(top), display_text(ordinary.children[0]))
         self.assertEqual(len(ordinary.children), 1)
         first_part = display_text(directory)
