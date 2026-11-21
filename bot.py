@@ -104,6 +104,15 @@ PB_EARLIEST_DATE=datetime(2026,11,7).date()
 def pb_date_eligible(value):
  return value>=PB_EARLIEST_DATE
 
+
+def parse_pb_date(raw):
+ for date_format in ("%m-%d-%Y","%Y-%m-%d","%m/%d/%Y"):
+  try:
+   return datetime.strptime(raw.strip(),date_format).date()
+  except ValueError:
+   pass
+ return None
+
 def stored_member_ids(r):
  try: raw=r["member_ids"]
  except (KeyError,IndexError): raw=None
@@ -497,7 +506,7 @@ class Store:
    c=await self.conn.execute("""INSERT INTO submissions(guild,submitter,category,activity,variant,members,member_ids,ms,pb_date,proof,created,updated)
    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",(g,u,cat,act,v,m,member_ids,ms,pb_date,p,now(),now()))
    await self.conn.commit();return c.lastrowid
- async def change(self,sid,prev,target,reviewer=None,proof=None):
+ async def change(self,sid,prev,target,reviewer=None,proof=None,pb_date=None):
   async with self.lock:
    try:
     record=await self.one("SELECT guild FROM submissions WHERE id=? AND status=?",(sid,prev))
@@ -508,8 +517,12 @@ class Store:
      # Bootstrap before the new result can change who held the spot.
      await self.rank_and_save_pb_points(g)
     if proof is None:
-     c=await self.conn.execute("UPDATE submissions SET status=?,reviewer=?,updated=? WHERE id=? AND status=?",
-       (target,reviewer,now(),sid,prev))
+     if pb_date is None:
+      c=await self.conn.execute("UPDATE submissions SET status=?,reviewer=?,updated=? WHERE id=? AND status=?",
+        (target,reviewer,now(),sid,prev))
+     else:
+      c=await self.conn.execute("UPDATE submissions SET status=?,reviewer=?,pb_date=?,updated=? WHERE id=? AND status=?",
+        (target,reviewer,pb_date,now(),sid,prev))
     else:
      c=await self.conn.execute("UPDATE submissions SET status=?,proof=?,updated=? WHERE id=? AND status=?",
        (target,proof,now(),sid,prev))
@@ -1250,11 +1263,12 @@ class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
    "a member of Novus. Older PBs are not eligible.\n\n"
    "**2. Group PBs.** Every player involved must have been a Novus member "
    "on the date of the run. List every participant accurately.\n\n"
-   "**3. Record details.** Include the PB date, completion time, activity, "
-   "mode/team size, and all involved players.\n\n"
-   "**4. Proof.** Provide a dated screenshot, clip, or evidence URL. "
+   "**3. Record details.** Submit the completion time, activity, "
+   "mode/team size, and all involved players. No date entry is needed.\n\n"
+   "**4. Proof.** Your screenshot or clip must visibly show the date the PB "
+   "was achieved. Only runs from November 7, 2026 onward qualify. "
    "Use **/pbproof** after submitting if proof was not attached yet. "
-   "Staff verifies eligibility and proof before approval.\n\n"
+   "Staff verifies the date and eligibility from the proof before approval.\n\n"
    "-# **Submit below only acknowledges these rules and closes this window. "
    "It does not submit a PB.**"
   ))
@@ -2709,7 +2723,10 @@ class Review(PBLayoutView):
   )
 
   panel.add_item(ui.Separator())
-  panel.add_item(ui.TextDisplay("-# PB DATE\n" f"**{clean(r['pb_date'] or 'Not recorded')}**"))
+  panel.add_item(ui.TextDisplay(
+   "-# PB DATE\n"
+   f"**{clean(r['pb_date'] or 'Staff to verify from dated proof')}**"
+  ))
   if active:
    if not leader:
     difference="First record for this leaderboard"
@@ -2767,7 +2784,12 @@ class Review(PBLayoutView):
     style=discord.ButtonStyle.danger,
     custom_id=f"pb:review:deny:{self.sid}"
    )
-   async def approve_clicked(i):await decide(i,self.sid,"approve")
+   async def approve_clicked(i):
+    if not is_staff(i):
+     return await i.response.send_message("Staff only.",ephemeral=True)
+    if not r["pb_date"]:
+     return await i.response.send_modal(ApprovePBDateModal(self.sid))
+    await decide(i,self.sid,"approve")
    async def deny_clicked(i):await decide(i,self.sid,"deny")
    approve.callback=approve_clicked
    deny.callback=deny_clicked
@@ -3807,12 +3829,26 @@ async def announce_first_place(r, previous_leader):
   return False
 
 
-async def decide(i,sid,choice):
+async def decide(i,sid,choice,verified_date=None):
  if not is_staff(i):return await i.response.send_message("Staff only.",ephemeral=True)
  r=await store.one("SELECT * FROM submissions WHERE id=?",(sid,))
  if not r or r["guild"]!=i.guild_id:return await i.response.send_message("Record not found.",ephemeral=True)
  if r["status"] not in ("pending","awaiting_proof"):return await i.response.send_message("Already resolved.",ephemeral=True)
+ normalized_date=None
  if choice=="approve":
+  if not r["pb_date"] and not verified_date:
+   return await i.response.send_message(
+    "Verify the PB date shown in the screenshot or clip before approving.",ephemeral=True
+   )
+  if verified_date:
+   parsed_date=parse_pb_date(verified_date)
+   if parsed_date is None:
+    return await i.response.send_message("Enter the proof date as MM/DD/YYYY or MM-DD-YYYY.",ephemeral=True)
+   if not pb_date_eligible(parsed_date):
+    return await i.response.send_message("Only PBs on or after November 7, 2026 are eligible.",ephemeral=True)
+   if parsed_date>datetime.now(timezone.utc).date():
+    return await i.response.send_message("The PB date cannot be in the future.",ephemeral=True)
+   normalized_date=parsed_date.isoformat()
   saved=archive_path(DBPATH,r["proof"])
   if (not r["proof"] or discord_attachment_key(r["proof"])
       or (saved is not None and not saved.is_file())):
@@ -3824,7 +3860,7 @@ async def decide(i,sid,choice):
   return await i.response.send_message("Already awaiting proof.",ephemeral=True)
  previous_leader=(await store.best_approved(i.guild_id,r["category"],r["activity"],r["variant"])) if choice=="approve" else None
  target={"approve":"approved","deny":"denied","request":"awaiting_proof"}[choice]
- if not await store.change(sid,r["status"],target,i.user.id):
+ if not await store.change(sid,r["status"],target,i.user.id,pb_date=normalized_date):
   return await i.response.send_message("Another reviewer updated this record.",ephemeral=True)
  updated=await store.one("SELECT * FROM submissions WHERE id=?",(sid,))
  await i.response.edit_message(view=await Review.make(updated),allowed_mentions=discord.AllowedMentions.none())
@@ -3840,6 +3876,25 @@ async def decide(i,sid,choice):
    await user.send(f"Your Novus PB #{sid} needs proof. Use /pbproof with submission_id {sid} in the Novus server.")
   except discord.HTTPException:logging.warning("Unable to DM submission owner")
 
+class ApprovePBDateModal(LoggedModal,title="NOVUS | Verify PB Date"):
+ def __init__(self,sid):
+  super().__init__(timeout=300)
+  self.sid=sid
+  self.verified_date=ui.TextInput(
+   placeholder="11/21/2026",
+   max_length=10,
+   custom_id="pb:approve:verified_date"
+  )
+  self.add_item(ui.Label(
+   text="Date shown in proof",
+   description="Enter the run date visible in the screenshot or clip. Do not use the submission date.",
+   component=self.verified_date
+  ))
+
+ async def on_submit(self,i):
+  await decide(i,self.sid,"approve",verified_date=self.verified_date.value)
+
+
 class ProofUploadModal(LoggedModal,title="NOVUS | PB Proof"):
  def __init__(self,sid):
   super().__init__(timeout=300)
@@ -3852,7 +3907,7 @@ class ProofUploadModal(LoggedModal,title="NOVUS | PB Proof"):
   )
   self.add_item(ui.Label(
    text="Proof",
-   description="Upload a screenshot or video clip of the PB.",
+   description="Upload the PB screenshot or clip with the run date visible.",
    component=self.proof_upload
   ))
 
@@ -3895,30 +3950,18 @@ async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
  try:ms=parse_ms(t)
  except ValueError as e:return await i.response.send_message(str(e),ephemeral=True)
 
- raw_date=pb_date.strip()
- parsed_date=None
- for date_format in ("%m-%d-%Y","%Y-%m-%d","%m/%d/%Y"):
-  try:
-   parsed_date=datetime.strptime(raw_date,date_format).date()
-   break
-  except ValueError:
-   pass
- if parsed_date is None:
+ # The member enters the time only; staff verifies the run date from the proof.
+ # Retain optional legacy dates for previously opened submission forms.
+ parsed_date=parse_pb_date(pb_date) if pb_date else None
+ if pb_date and parsed_date is None:
+  return await i.response.send_message("Invalid PB date format.",ephemeral=True)
+ if parsed_date and not pb_date_eligible(parsed_date):
   return await i.response.send_message(
-   "Enter the PB date as MM/DD/YYYY or MM-DD-YYYY.",
-   ephemeral=True
+   "Only PBs achieved on or after **November 7, 2026** are eligible.",ephemeral=True
   )
- if not pb_date_eligible(parsed_date):
-  return await i.response.send_message(
-   "Only PBs achieved on or after **November 7, 2026** are eligible.",
-   ephemeral=True
-  )
- if parsed_date>datetime.now(timezone.utc).date():
-  return await i.response.send_message(
-   "The PB date cannot be in the future.",
-   ephemeral=True
-  )
- normalized_date=parsed_date.isoformat()
+ if parsed_date and parsed_date>datetime.now(timezone.utc).date():
+  return await i.response.send_message("The PB date cannot be in the future.",ephemeral=True)
+ normalized_date=parsed_date.isoformat() if parsed_date else None
 
  if variant not in CATS.get(cat,{}).get(act,()):
   return await i.response.send_message("Choose a listed format for this activity.",ephemeral=True)
@@ -3958,10 +4001,10 @@ async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
   logging.exception("Staff review message failed")
   return await i.followup.send(f"Submission #{sid} saved, but staff delivery failed. Notify staff.",ephemeral=True)
  await i.followup.send(
-  f"PB #{sid} submitted for staff review for **{normalized_date}**. "
-  "The PB must have been achieved after you joined Novus; for group PBs, every listed player "
-  "must also have been a Novus member on that date. "
-  + ("Proof received." if proof else "Attach proof below, or use /pbproof later."),
+  f"PB #{sid} submitted for staff review. "
+  "The proof must visibly show the run date (November 7, 2026 or later). "
+  "All listed players must have been Novus members when the PB was achieved. "
+  + ("Proof received." if proof else "Attach dated proof below, or use /pbproof later."),
   ephemeral=True,
   view=None if proof else ProofUploadView(sid)
  )
@@ -4018,8 +4061,9 @@ def boss_submission_options():
  ]
 
 def parse_submission_details(raw):
+ # Submission is time-only. Accept legacy time/date input from old open modals.
  match=re.fullmatch(
-  r"\s*(.+?)\s*[|,]\s*(\d{1,2}-\d{1,2}-\d{4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{4})\s*",
+  r"\s*(.+?)(?:\s*[|,]\s*(\d{1,2}-\d{1,2}-\d{4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{4}))?\s*",
   raw.strip()
  )
  if not match:
@@ -4056,8 +4100,8 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    custom_id="pb:submit:boss"
   )
   self.details_input=ui.TextInput(
-   placeholder="30.60 | 11/08/2026",
-   max_length=40,
+   placeholder="30.60 or 14:32.60",
+   max_length=20,
    custom_id="pb:submit:details"
   )
   self.members_select=ui.UserSelect(
@@ -4083,8 +4127,8 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    component=self.boss_select
   ))
   self.add_item(ui.Label(
-   text="PB time & date",
-   description="Use SS.ss or MM:SS.ss | MM/DD/YYYY or MM-DD-YYYY.",
+   text="PB time",
+   description="Use SS.ss or MM:SS.ss. The run date must appear in your proof screenshot.",
    component=self.details_input
   ))
   self.add_item(ui.Label(
@@ -4139,7 +4183,7 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
   parsed=parse_submission_details(self.details_input.value)
   if not parsed:
    return await i.response.send_message(
-    "Use **SS.ss or MM:SS.ss | MM/DD/YYYY or MM-DD-YYYY**.",
+    "Use **SS.ss or MM:SS.ss**. The run date must be visible in your proof.",
     ephemeral=True
    )
 
