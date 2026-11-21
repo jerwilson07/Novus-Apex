@@ -912,7 +912,7 @@ async def show_my_pbs(i):
  )
 
 def pb_scroll_to_top_text(url):
- return f"## [↑ JUMP TO THE TOP ↑]({url})"
+ return f"## [↑ CLICK TO SUBMIT PB ↑]({url})"
 
 
 async def paced_startup_edit(message, **kwargs):
