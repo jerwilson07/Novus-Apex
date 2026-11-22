@@ -1018,6 +1018,16 @@ async def on_ready():
   await resolve_royal_titans_35_partner(guild)
   if guild.id==NOVUS_GUILD_ID:
    start_logged_task(refresh_royal_titans_35_review_once(),name="pb-royal-titans-review")
+  if guild.id==NOVUS_GUILD_ID and await store.panel(guild.id) and not await store.raid_panel(guild.id):
+   # Discord message order is chronological, so migrate the old board once.
+   try:
+    old_panel=await store.panel(guild.id)
+    old_channel=bot.get_channel(old_panel["channel"]) or await bot.fetch_channel(old_panel["channel"])
+    await rebuild_public_pb_panel(old_channel,guild.id)
+    logging.info("Created separate NOVUS TOP 10 RAIDS post below the overall leaderboard")
+   except Exception:
+    logging.exception("Could not migrate existing PB board to separate raids Top 10 post")
+    continue
   records=await store.boss_boards(guild.id)
   directory=await store.boss_panel(guild.id)
   if directory:
@@ -1028,6 +1038,12 @@ async def on_ready():
      records=await publish_missing_added_boss_boards(ch,guild.id,records)
     jump_links=pb_directory_links(guild.id,records)
     await paced_startup_edit(message, view=BossDirectory(jump_links,page=2 if guild.id==NOVUS_GUILD_ID else None),allowed_mentions=discord.AllowedMentions.none())
+    if guild.id==NOVUS_GUILD_ID:
+     primary=await store.primary_directory(guild.id)
+     if primary:
+      first_channel=bot.get_channel(primary["channel"]) or await bot.fetch_channel(primary["channel"])
+      first_message=await first_channel.fetch_message(primary["message"])
+      await paced_startup_edit(first_message,view=BossDirectory(jump_links,page=1),allowed_mentions=discord.AllowedMentions.none())
     if guild.id==NOVUS_GUILD_ID:
      published=await ch.fetch_message(message.id)
      body=old_announcement_text(published)
@@ -1060,22 +1076,13 @@ async def on_ready():
     rendered_home=ui.LayoutView.from_message(confirmed)
     body=old_announcement_text(confirmed,components=confirmed.components[:1])
     if guild.id==NOVUS_GUILD_ID and directory:
-     part_one=old_announcement_text(confirmed,components=confirmed.components[1:])
-     headings=[line for line in part_one.splitlines() if line.startswith("### ")]
-     adjacent=[msg.id async for msg in ch.history(
-      after=discord.Object(id=confirmed.id),oldest_first=True,limit=1
-     )]==[directory["message"]]
-     logging.info("Verified split PB directory: first_part=%s adjacent=%s first_message=%s second_message=%s",
-                  headings,adjacent,confirmed.id,directory["message"])
-     cards=rendered_home.children
-     directory_card_index=2
-     items=(cards[directory_card_index].children if len(cards)>directory_card_index
-            and isinstance(cards[directory_card_index],ui.Container) else [])
-     divider=items[1] if len(items)>1 else None
-     logging.info("Verified PB directory header: blue_divider=%s helper_text_present=%s",
-                  isinstance(divider,ui.MediaGallery) and any(
-                   item.media.url==PB_DIRECTORY_DIVIDER_URL for item in divider.items),
-                  "Select an activity" in part_one)
+     raids_post=await store.raid_panel(guild.id)
+     first_dir=await store.primary_directory(guild.id)
+     expected=[r["message"] for r in (raids_post,first_dir,directory) if r]
+     following=[msg.id async for msg in ch.history(
+      after=discord.Object(id=confirmed.id),oldest_first=True,limit=len(expected)
+     )]
+     logging.info("Verified overall -> raids -> directory post order: %s",following==expected)
     standings=body.splitlines()
     numbered_rows=[int(match[1]) for line in standings
                    if (match:=re.match(r"\*\*([0-9]+)\.\*\* <@",line))]
@@ -1121,6 +1128,15 @@ async def on_ready():
    except discord.HTTPException:
     logging.exception("Failed to refresh PB home panel heading")
   if guild.id==NOVUS_GUILD_ID:
+   raids_post=await store.raid_panel(guild.id)
+   if raids_post:
+    try:
+     raids_channel=bot.get_channel(raids_post["channel"]) or await bot.fetch_channel(raids_post["channel"])
+     raids_message=await raids_channel.fetch_message(raids_post["message"])
+     raids_view=await RaidTop10.make(guild.id)
+     await paced_startup_edit(raids_message,**raids_view.edit_options(raids_message),allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+     logging.exception("Failed to refresh separate raids Top 10 post")
    start_logged_task(clear_old_podium_badges(guild),name="pb-podium-badge-backfill")
   # Refresh the existing footer in place so no /pbpanel rerun is needed.
   footer=await store.footer(guild.id)
