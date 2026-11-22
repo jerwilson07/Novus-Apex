@@ -1,4 +1,4 @@
-"""Regression tests for the raid/boss-specific PB submission controls."""
+"""Regression checks for direct raid/boss dropdown modals."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -7,141 +7,99 @@ import bot
 
 
 class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
-    def test_home_has_four_buttons_with_separate_submission_paths(self):
-        home = bot.Home()
-        buttons = [x.label for item in home.children[0].children
-                   if isinstance(item, bot.ui.ActionRow) for x in item.children]
-        self.assertEqual(buttons, [
-            "Submit Raid PB", "Submit Boss PB", "PB Rules", "My PBs"
-        ])
+    def test_home_buttons_present_two_category_actions(self):
+        view=bot.Home()
+        labels=[button.label for row in view.children[0].children
+                if isinstance(row,bot.ui.ActionRow) for button in row.children]
+        self.assertEqual(labels,["Submit Raid PB","Submit Boss PB","PB Rules","My PBs"])
 
-    def test_raid_picker_has_only_four_raid_buttons(self):
-        picker = bot.RaidSubmissionPicker()
-        buttons = [x.label for x in picker.walk_children()
-                   if isinstance(x, bot.ui.Button)]
-        self.assertEqual(buttons, list(bot.RAID_LABELS.values()))
+    async def test_home_buttons_open_modals_directly(self):
+        view=bot.Home()
+        row=next(row for row in view.children[0].children
+                 if isinstance(row,bot.ui.ActionRow))
+        response=SimpleNamespace(send_modal=AsyncMock(),send_message=AsyncMock())
+        i=SimpleNamespace(response=response)
+        await row.children[0].callback(i)
+        self.assertIsInstance(response.send_modal.await_args.args[0],bot.AllRaidSubmitModal)
+        await row.children[1].callback(i)
+        self.assertIsInstance(response.send_modal.await_args.args[0],bot.BossSubmitModal)
+        response.send_message.assert_not_awaited()
 
-    def test_each_raid_modal_has_only_formats_for_its_own_raid(self):
-        for activity, formats in bot.RAIDS.items():
-            with self.subTest(activity=activity):
-                modal = bot.RaidSubmitModal(activity)
-                self.assertEqual(
-                    [x.value for x in modal.format_select.options],
-                    formats,
-                )
-                self.assertEqual(len(modal.children), 3)
-                self.assertEqual(modal.details_input.placeholder, "30.60 or 14:32.60")
-                self.assertFalse(hasattr(modal, "boss_select"))
+    def test_raid_modal_has_every_raid_and_variant_in_one_dropdown(self):
+        modal=bot.AllRaidSubmitModal()
+        expected={(activity,variant) for activity,variants in bot.RAIDS.items()
+                  for variant in variants}
+        options={tuple(option.value.split("|||",1)) for option in modal.raid_select.options}
+        self.assertEqual(options,expected)
+        self.assertLessEqual(len(modal.raid_select.options),25)
+        self.assertEqual(len(modal.children),3)
+        self.assertFalse(hasattr(modal,"boss_select"))
 
-    def test_boss_picker_covers_every_boss_including_both_gauntlets(self):
-        options = {
-            group: [option.value for option in bot.boss_submission_options(group)]
-            for group in bot.BOSS_SUBMISSION_GROUPS
-        }
-        combined = [boss for group in options.values() for boss in group]
-        self.assertEqual(set(combined), set(bot.BOSSES))
-        self.assertEqual(len(combined), len(set(combined)))
-        self.assertTrue(all(len(group) <= 25 for group in options.values()))
-        self.assertIn("Gauntlet", options["Bosses"])
-        self.assertIn("Corrupted Gauntlet", options["Bosses"])
-        self.assertNotIn("Gauntlet / Corrupted Gauntlet", combined)
-        picker = bot.BossSubmissionPicker()
-        self.assertEqual(
-            len([child for child in picker.walk_children()
-                 if isinstance(child, bot.ui.Button)]),
-            len(bot.BOSS_SUBMISSION_GROUPS)
-        )
+    def test_existing_per_raid_shortcut_still_limits_raid_formats(self):
+        for activity,formats in bot.RAIDS.items():
+            modal=bot.RaidSubmitModal(activity)
+            self.assertEqual([option.value for option in modal.format_select.options],formats)
 
-    def test_boss_modal_has_only_three_modes_and_separate_team_sizes(self):
-        modal = bot.BossSubmitModal()
-        self.assertEqual(
-            [(option.label, option.value) for option in modal.format_select.options],
-            [
-                ("Standard (no mode)", "__none__"),
-                ("Normal", "Normal"),
-                ("Awakened", "Awakened"),
-            ]
-        )
-        self.assertEqual(
-            [option.value for option in modal.team_size_select.options],
-            ["Duo", "Trio", "5-Man"]
-        )
-        self.assertEqual(len(modal.children), 5)
-        self.assertEqual(
-            {option.value for option in modal.boss_select.options},
-            set(bot.BOSS_SUBMISSION_GROUPS["Bosses"])
-        )
-        for mode in ("Regular Gauntlet", "Corrupted Gauntlet", "Hard Mode · Trio",
-                     "Challenge Mode · Solo", "Expert · 8-Man"):
-            self.assertNotIn(mode, [option.value for option in modal.format_select.options])
+    def test_boss_modal_covers_all_bosses_and_keeps_only_three_modes(self):
+        modal=bot.BossSubmitModal()
+        standard={option.value for option in modal.boss_select.options}
+        special={option.value for option in modal.special_boss_select.options}
+        regular={activity for activity,variants in bot.BOSSES.items()
+                 if variants==["Standard"]}
+        dt2={activity for activity,variants in bot.BOSSES.items()
+             if set(variants)=={"Normal","Awakened"}}
+        team={f"{activity}|||{size}" for activity,formats in bot.TEAM_BOSS_SIZES.items()
+              for size in formats}
+        self.assertEqual(standard,regular)
+        self.assertEqual(special,dt2|team)
+        self.assertIn("Gauntlet",standard)
+        self.assertIn("Corrupted Gauntlet",standard)
+        self.assertLessEqual(len(modal.boss_select.options),25)
+        self.assertLessEqual(len(modal.special_boss_select.options),25)
+        self.assertEqual([opt.value for opt in modal.format_select.options],
+                         ["__none__","Normal","Awakened"])
+        self.assertEqual(len(modal.children),5)
+        self.assertEqual(modal.details_input.placeholder,"30.60 or 14:32.60")
 
-    async def test_boss_modal_standard_and_special_mode_validation(self):
-        interaction = SimpleNamespace(
-            response=SimpleNamespace(send_message=AsyncMock())
-        )
-        with patch.object(bot, "submit_modal_details", new_callable=AsyncMock) as send:
-            standard = bot.BossSubmitModal()
-            standard.boss_select._values = ["Vorkath"]
-            standard.format_select._values = []
-            standard.team_size_select._values = []
-            await standard.on_submit(interaction)
-            self.assertEqual(send.await_args.args[1:4], ("Bosses", "Vorkath", "Standard"))
-
-            for boss in ("Gauntlet", "Corrupted Gauntlet"):
+    async def test_boss_modal_resolves_normal_bosses_dt2_nex_and_huey(self):
+        i=SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+        with patch.object(bot,"submit_modal_details",new_callable=AsyncMock) as send:
+            async def check(standard,special,mode,expected):
+                modal=bot.BossSubmitModal()
+                modal.boss_select._values=[standard] if standard else []
+                modal.special_boss_select._values=[special] if special else []
+                modal.format_select._values=[mode] if mode else []
+                await modal.on_submit(i)
+                self.assertEqual(send.await_args.args[1:4],expected)
                 send.reset_mock()
-                gauntlet = bot.BossSubmitModal()
-                gauntlet.boss_select._values = [boss]
-                gauntlet.format_select._values = []
-                gauntlet.team_size_select._values = []
-                await gauntlet.on_submit(interaction)
-                self.assertEqual(send.await_args.args[1:4], ("Bosses", boss, "Standard"))
 
-            send.reset_mock()
-            dt2 = bot.BossSubmitModal("DT2 Bosses")
-            dt2.boss_select._values = ["Vardorvis"]
-            dt2.format_select._values = ["Awakened"]
-            dt2.team_size_select._values = []
-            await dt2.on_submit(interaction)
-            self.assertEqual(send.await_args.args[1:4], ("Bosses", "Vardorvis", "Awakened"))
+            await check("Vorkath",None,None,("Bosses","Vorkath","Standard"))
+            await check("Gauntlet",None,None,("Bosses","Gauntlet","Standard"))
+            await check("Corrupted Gauntlet",None,None,
+                        ("Bosses","Corrupted Gauntlet","Standard"))
+            await check(None,"Vardorvis","Awakened",("Bosses","Vardorvis","Awakened"))
+            await check(None,"Nex|||Trio",None,("Bosses","Nex","Trio"))
+            await check(None,"The Hueycoatl|||5-Man",None,
+                        ("Bosses","The Hueycoatl","5-Man"))
 
-            send.reset_mock()
-            nex = bot.BossSubmitModal()
-            nex.boss_select._values = ["Nex"]
-            nex.format_select._values = []
-            nex.team_size_select._values = ["Trio"]
-            await nex.on_submit(interaction)
-            self.assertEqual(send.await_args.args[1:4], ("Bosses", "Nex", "Trio"))
-
-            send.reset_mock()
-            huey = bot.BossSubmitModal()
-            huey.boss_select._values = ["The Hueycoatl"]
-            huey.format_select._values = []
-            huey.team_size_select._values = ["5-Man"]
-            await huey.on_submit(interaction)
-            self.assertEqual(send.await_args.args[1:4], ("Bosses", "The Hueycoatl", "5-Man"))
-
-            send.reset_mock()
-            dt2.format_select._values = []
-            await dt2.on_submit(interaction)
+            modal=bot.BossSubmitModal()
+            modal.boss_select._values=["Gauntlet"]
+            modal.special_boss_select._values=["Nex|||Duo"]
+            modal.format_select._values=[]
+            await modal.on_submit(i)
             send.assert_not_awaited()
-            interaction.response.send_message.assert_awaited()
-            self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+            i.response.send_message.assert_awaited()
+            self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
 
-            interaction.response.send_message.reset_mock()
-            nex.team_size_select._values = []
-            await nex.on_submit(interaction)
-            send.assert_not_awaited()
-            interaction.response.send_message.assert_awaited()
-
-    async def test_raid_modal_preserves_categorized_submission(self):
-        i = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
-        modal = bot.RaidSubmitModal("Theatre of Blood")
-        modal.format_select._values = ["Hard Mode · Trio"]
-        with patch.object(bot, "submit_modal_details", new_callable=AsyncMock) as send:
+    async def test_all_raid_modal_preserves_exact_variant(self):
+        i=SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+        modal=bot.AllRaidSubmitModal()
+        modal.raid_select._values=["Theatre of Blood|||Hard Mode · Trio"]
+        with patch.object(bot,"submit_modal_details",new_callable=AsyncMock) as send:
             await modal.on_submit(i)
         self.assertEqual(send.await_args.args[1:4],
-                         ("Raids", "Theatre of Blood", "Hard Mode · Trio"))
+                         ("Raids","Theatre of Blood","Hard Mode · Trio"))
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     unittest.main()
