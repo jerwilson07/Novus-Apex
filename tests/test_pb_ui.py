@@ -75,9 +75,12 @@ class PBLayoutTests(unittest.TestCase):
         self.assertIn("Expert · 8-Man", format_labels)
         self.assertIn("Normal", format_labels)
         self.assertIn("Awakened", format_labels)
-        boss_labels = [option.label for option in bot.boss_submission_options()]
-        self.assertIn("Inferno", boss_labels)
-        self.assertIn("Vardorvis", boss_labels)
+        standard_bosses = [option.label for option in bot.standard_boss_submission_options()]
+        special_bosses = [option.label for option in bot.special_boss_submission_options()]
+        self.assertIn("Inferno", standard_bosses)
+        self.assertIn("Gauntlet", standard_bosses)
+        self.assertIn("Corrupted Gauntlet", standard_bosses)
+        self.assertIn("Vardorvis", special_bosses)
         self.assertTrue(bot.SubmitModal())
 
     def test_pb_time_then_date_format(self):
