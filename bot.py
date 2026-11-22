@@ -307,6 +307,7 @@ NOVUS_PB_TROPHY_IDS={
 PB_PODIUM_NAMES={rank:f"pb{rank}" for rank in PB_PODIUM_FALLBACK}
 PB_FEATURED_HEADING="## "
 PB_TOP10_TITLE="## ✦ NOVUS TOP 10 OVERALL"
+PB_RAIDS_TITLE="## ✦ NOVUS TOP 10 RAIDS"
 PB_TOP10_PODIUM_HEADING="## "
 PB_PLACEMENT_POINTS=(5,3,1)
 
@@ -827,6 +828,16 @@ def pb_point_totals(rows):
  return scores.values()
 
 
+def raid_pb_points(rows):
+ """Rank raid podium placements with the same 5/3/1 rules as the overall board."""
+ raid_rows=(r for r in rows if r["category"]=="Raids" and r["activity"] in RAIDS)
+ return rank_pb_points(pb_point_totals(raid_rows))
+
+
+async def calculate_raid_pb_points(g):
+ return raid_pb_points(await store.approved_for_points(g))
+
+
 async def calculate_pb_points(g):
  async with store.lock:
   try:
@@ -1043,7 +1054,9 @@ async def on_ready():
      logging.info("Verified split PB directory: first_part=%s adjacent=%s first_message=%s second_message=%s",
                   headings,adjacent,confirmed.id,directory["message"])
      cards=rendered_home.children
-     items=cards[1].children if len(cards)>1 and isinstance(cards[1],ui.Container) else []
+     directory_card_index=2
+     items=(cards[directory_card_index].children if len(cards)>directory_card_index
+            and isinstance(cards[directory_card_index],ui.Container) else [])
      divider=items[1] if len(items)>1 else None
      logging.info("Verified PB directory header: blue_divider=%s helper_text_present=%s",
                   isinstance(divider,ui.MediaGallery) and any(
@@ -1079,7 +1092,8 @@ async def on_ready():
        podium_uploaded=downloaded==view.podium_image
      except (discord.DiscordException,aiohttp.ClientError,TimeoutError):
       logging.warning("Unable to read the published PB podium image",exc_info=True)
-    dividers=sum(isinstance(item,ui.Separator) for item in live_parts)
+    overall_parts=(rendered_home.children[0].children if rendered_home.children else [])
+    dividers=sum(isinstance(item,ui.Separator) for item in overall_parts)
     podium_divider=dividers==3
     logging.info("Verified shared PB Top 10 ranks on message %s: ranks=%s ranked Discord content matches=%s podium divider=%s",
                  message.id,ranks,matches_ranked_rows,podium_divider)
@@ -1277,7 +1291,7 @@ class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
   await i.response.defer(ephemeral=True)
 
 
-def top10_standings_parts(points,guild_id,*,text_limit=4000):
+def top10_standings_parts(points,guild_id,*,text_limit=4000,title=PB_TOP10_TITLE):
  footer=top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True)
 
  def row(entry,names):
@@ -1293,7 +1307,7 @@ def top10_standings_parts(points,guild_id,*,text_limit=4000):
   return ("\n".join(rows[:split]),rest) if split else (rest,)
 
  def fits(parts):
-  return len((PB_TOP10_TITLE+"".join(parts)).encode("utf-16-le"))//2<=text_limit
+  return len((title+"".join(parts)).encode("utf-16-le"))//2<=text_limit
 
  rows=[row(entry,f"<@{entry['member_id']}>") for entry in points]
  parts=render(rows or ["-# No approved PB points yet."],[entry["rank"] for entry in points])
@@ -1323,7 +1337,7 @@ def top10_standings_text(points,guild_id):
 
 
 class Home(PBLayoutView):
- def __init__(self,points=None,*,guild_id=None,podium=None,directory_links=None):
+ def __init__(self,points=None,*,guild_id=None,podium=None,directory_links=None,raid_points=None):
   super().__init__(timeout=None)
   points=points or []
   self.podium_image=podium
@@ -1336,7 +1350,17 @@ class Home(PBLayoutView):
   directory_units=(sum(len(item.content.encode("utf-16-le"))//2 for item in directory_card.children
                        if isinstance(item,ui.TextDisplay))
                    if directory_card is not None else 0)
-  self.standing_parts=top10_standings_parts(points,guild_id,text_limit=4000-directory_units)
+  show_raid_board=guild_id==NOVUS_GUILD_ID
+  self.raid_standing_parts=(
+   top10_standings_parts(raid_points or [],guild_id,title=PB_RAIDS_TITLE,text_limit=1600)
+   if show_raid_board else ()
+  )
+  raid_units=(len((PB_RAIDS_TITLE+"".join(self.raid_standing_parts)).encode("utf-16-le"))//2
+              if show_raid_board else 0)
+  # Discord caps the aggregate component text; reserve space for raids and directory.
+  self.standing_parts=top10_standings_parts(
+   points,guild_id,text_limit=4000-directory_units-raid_units-80
+  )
 
   hero=ui.Container(accent_colour=GOLD)
   banner=ui.MediaGallery()
@@ -1389,15 +1413,27 @@ class Home(PBLayoutView):
   hero.add_item(actions)
 
   self.add_item(hero)
+  if show_raid_board:
+   raids_card=ui.Container(accent_colour=GOLD)
+   raids_card.add_item(ui.TextDisplay(PB_RAIDS_TITLE))
+   raids_card.add_item(ui.Separator())
+   for index,part in enumerate(self.raid_standing_parts):
+    if index:
+     raids_card.add_item(ui.Separator())
+    raids_card.add_item(ui.TextDisplay(part))
+   self.add_item(raids_card)
   if directory_card is not None:
    self.add_item(directory_card)
 
  @classmethod
  async def make(cls,g):
-  return await cls.for_points(g,await calculate_pb_points(g))
+  return await cls.for_points(
+   g,await calculate_pb_points(g),
+   raid_points=await calculate_raid_pb_points(g) if g==NOVUS_GUILD_ID else None
+  )
 
  @classmethod
- async def for_points(cls,g,points,*,directory_links=None):
+ async def for_points(cls,g,points,*,directory_links=None,raid_points=None):
   podium=None
   leaders=[row for row in points if row["rank"]<=3]
   # The podium requires three distinct ranked slots.
@@ -1412,7 +1448,8 @@ class Home(PBLayoutView):
       podium=await asyncio.to_thread(render_podium,leaders,names)
    except (discord.HTTPException,OSError,ValueError):
     logging.exception("Could not render the PB podium; using text standings")
-  return cls(points,guild_id=g,podium=podium,directory_links=directory_links)
+  return cls(points,guild_id=g,podium=podium,directory_links=directory_links,
+             raid_points=raid_points)
 
  def podium_file(self):
   return discord.File(BytesIO(self.podium_image),filename=self.podium_filename) if self.podium_image is not None else None
@@ -1615,8 +1652,10 @@ async def public_home_view(g,*,points=None,records=None,directory=None):
  links=None
  if directory:
   links=pb_directory_links(g,await store.boss_boards(g) if records is None else records)
- return await Home.for_points(g,await calculate_pb_points(g) if points is None else points,
-                              directory_links=links)
+ return await Home.for_points(
+  g,await calculate_pb_points(g) if points is None else points,
+  directory_links=links,raid_points=await calculate_raid_pb_points(g)
+ )
 
 
 def boss_directory_card(jump_links=None,*,page=None):
@@ -4415,7 +4454,10 @@ async def pbpanel(i:discord.Interaction):
    allowed_mentions=discord.AllowedMentions.none()
   )
   if split_directory:
-   view=await Home.for_points(i.guild_id,await calculate_pb_points(i.guild_id),directory_links=jump_links)
+   view=await Home.for_points(
+    i.guild_id,await calculate_pb_points(i.guild_id),directory_links=jump_links,
+    raid_points=await calculate_raid_pb_points(i.guild_id)
+   )
    await panel_msg.edit(**view.edit_options(panel_msg),allowed_mentions=discord.AllowedMentions.none())
 
   async with PUBLIC_PROOF_LOCK:
