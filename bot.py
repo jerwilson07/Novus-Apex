@@ -450,6 +450,8 @@ class Store:
     guild INTEGER NOT NULL,rank INTEGER NOT NULL,member_id INTEGER NOT NULL,
     PRIMARY KEY(guild,rank));
   CREATE TABLE IF NOT EXISTS panel_banners(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
+  CREATE TABLE IF NOT EXISTS panel_raids(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
+  CREATE TABLE IF NOT EXISTS panel_directory_primary(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS one_time_pb_migrations(name TEXT PRIMARY KEY,applied TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS panel_bosses(guild INTEGER PRIMARY KEY,channel INTEGER,message INTEGER);
   CREATE TABLE IF NOT EXISTS boss_board_messages(guild INTEGER NOT NULL,activity TEXT NOT NULL,channel INTEGER NOT NULL,message INTEGER NOT NULL,PRIMARY KEY(guild,activity));
@@ -559,6 +561,18 @@ class Store:
  async def set_banner(self,g,ch,msg):
   async with self.lock:
    await self.conn.execute("""INSERT INTO panel_banners VALUES(?,?,?) ON CONFLICT(guild) DO UPDATE
+   SET channel=excluded.channel,message=excluded.message""",(g,ch,msg))
+   await self.conn.commit()
+ async def raid_panel(self,g):return await self.one("SELECT * FROM panel_raids WHERE guild=?",(g,))
+ async def set_raid_panel(self,g,ch,msg):
+  async with self.lock:
+   await self.conn.execute("""INSERT INTO panel_raids VALUES(?,?,?) ON CONFLICT(guild) DO UPDATE
+   SET channel=excluded.channel,message=excluded.message""",(g,ch,msg))
+   await self.conn.commit()
+ async def primary_directory(self,g):return await self.one("SELECT * FROM panel_directory_primary WHERE guild=?",(g,))
+ async def set_primary_directory(self,g,ch,msg):
+  async with self.lock:
+   await self.conn.execute("""INSERT INTO panel_directory_primary VALUES(?,?,?) ON CONFLICT(guild) DO UPDATE
    SET channel=excluded.channel,message=excluded.message""",(g,ch,msg))
    await self.conn.commit()
  async def boss_panel(self,g):return await self.one("SELECT * FROM panel_bosses WHERE guild=?",(g,))
@@ -1346,21 +1360,7 @@ class Home(PBLayoutView):
    self.podium_filename=PODIUM_ANIMATED
   elif podium and podium.startswith((b"GIF87a",b"GIF89a")):
    self.podium_filename=PODIUM_GIF
-  directory_card=boss_directory_card(directory_links,page=1) if directory_links is not None else None
-  directory_units=(sum(len(item.content.encode("utf-16-le"))//2 for item in directory_card.children
-                       if isinstance(item,ui.TextDisplay))
-                   if directory_card is not None else 0)
-  show_raid_board=guild_id==NOVUS_GUILD_ID
-  self.raid_standing_parts=(
-   top10_standings_parts(raid_points or [],guild_id,title=PB_RAIDS_TITLE,text_limit=1600)
-   if show_raid_board else ()
-  )
-  raid_units=(len((PB_RAIDS_TITLE+"".join(self.raid_standing_parts)).encode("utf-16-le"))//2
-              if show_raid_board else 0)
-  # Discord caps the aggregate component text; reserve space for raids and directory.
-  self.standing_parts=top10_standings_parts(
-   points,guild_id,text_limit=4000-directory_units-raid_units-80
-  )
+  self.standing_parts=top10_standings_parts(points,guild_id)
 
   hero=ui.Container(accent_colour=GOLD)
   banner=ui.MediaGallery()
@@ -1413,24 +1413,10 @@ class Home(PBLayoutView):
   hero.add_item(actions)
 
   self.add_item(hero)
-  if show_raid_board:
-   raids_card=ui.Container(accent_colour=GOLD)
-   raids_card.add_item(ui.TextDisplay(PB_RAIDS_TITLE))
-   raids_card.add_item(ui.Separator())
-   for index,part in enumerate(self.raid_standing_parts):
-    if index:
-     raids_card.add_item(ui.Separator())
-    raids_card.add_item(ui.TextDisplay(part))
-   self.add_item(raids_card)
-  if directory_card is not None:
-   self.add_item(directory_card)
 
  @classmethod
  async def make(cls,g):
-  return await cls.for_points(
-   g,await calculate_pb_points(g),
-   raid_points=await calculate_raid_pb_points(g) if g==NOVUS_GUILD_ID else None
-  )
+  return await cls.for_points(g,await calculate_pb_points(g))
 
  @classmethod
  async def for_points(cls,g,points,*,directory_links=None,raid_points=None):
@@ -1448,8 +1434,7 @@ class Home(PBLayoutView):
       podium=await asyncio.to_thread(render_podium,leaders,names)
    except (discord.HTTPException,OSError,ValueError):
     logging.exception("Could not render the PB podium; using text standings")
-  return cls(points,guild_id=g,podium=podium,directory_links=directory_links,
-             raid_points=raid_points)
+  return cls(points,guild_id=g,podium=podium,directory_links=directory_links)
 
  def podium_file(self):
   return discord.File(BytesIO(self.podium_image),filename=self.podium_filename) if self.podium_image is not None else None
@@ -1460,6 +1445,71 @@ class Home(PBLayoutView):
 
  def edit_options(self,message):
   file=self.podium_file()
+  attachments=[a for a in message.attachments if a.filename not in PODIUM_ATTACHMENTS]
+  if file or len(attachments)!=len(message.attachments):
+   return {"view":self,"attachments":[*attachments,*([file] if file else [])]}
+  return {"view":self}
+
+
+ 
+class RaidTop10(PBLayoutView):
+ """Separate raid-only Top 10 post without the home banner or buttons."""
+ def __init__(self,points=None,*,guild_id=None,podium=None):
+  super().__init__(timeout=None)
+  points=points or []
+  self.podium_image=podium
+  self.podium_filename=PODIUM_FILENAME
+  if podium and podium.startswith(b"RIFF") and podium[8:12]==b"WEBP":
+   self.podium_filename=PODIUM_ANIMATED
+  elif podium and podium.startswith((b"GIF87a",b"GIF89a")):
+   self.podium_filename=PODIUM_GIF
+  self.standing_parts=top10_standings_parts(points,guild_id,title=PB_RAIDS_TITLE)
+  card=ui.Container(accent_colour=GOLD)
+  card.add_item(ui.TextDisplay(PB_RAIDS_TITLE))
+  card.add_item(ui.Separator())
+  if self.podium_image is not None:
+   gallery=ui.MediaGallery()
+   gallery.add_item(media=f"attachment://{self.podium_filename}")
+   card.add_item(gallery)
+   card.add_item(ui.Separator())
+   self.standing_parts=self.standing_parts[1:] or (
+    "\n"+top10_trophy_subtext(guild_id,PB_PLACEMENT_POINTS,scoring=True),
+   )
+  for index,part in enumerate(self.standing_parts):
+   if index:
+    card.add_item(ui.Separator())
+   card.add_item(ui.TextDisplay(part))
+  self.add_item(card)
+
+ @classmethod
+ async def make(cls,g):
+  return await cls.for_points(g,await calculate_raid_pb_points(g))
+
+ @classmethod
+ async def for_points(cls,g,points):
+  podium=None
+  leaders=[row for row in points if row["rank"]<=3]
+  if g==NOVUS_GUILD_ID and [row["rank"] for row in leaders]==[1,2,3]:
+   try:
+    names=await podium_player_names(g,leaders)
+    if names:
+     try:
+      podium=await asyncio.to_thread(render_podium_animation,leaders,names)
+     except (OSError,ValueError):
+      logging.warning("Raid podium animation unavailable; using static",exc_info=True)
+      podium=await asyncio.to_thread(render_podium,leaders,names)
+   except (discord.HTTPException,OSError,ValueError):
+    logging.exception("Could not render the raid podium; using text standings")
+  return cls(points,guild_id=g,podium=podium)
+
+ def send_options(self):
+  file=(discord.File(BytesIO(self.podium_image),filename=self.podium_filename)
+        if self.podium_image is not None else None)
+  return {"view":self,**({"file":file} if file else {})}
+
+ def edit_options(self,message):
+  file=(discord.File(BytesIO(self.podium_image),filename=self.podium_filename)
+        if self.podium_image is not None else None)
   attachments=[a for a in message.attachments if a.filename not in PODIUM_ATTACHMENTS]
   if file or len(attachments)!=len(message.attachments):
    return {"view":self,"attachments":[*attachments,*([file] if file else [])]}
@@ -1652,10 +1702,7 @@ async def public_home_view(g,*,points=None,records=None,directory=None):
  links=None
  if directory:
   links=pb_directory_links(g,await store.boss_boards(g) if records is None else records)
- return await Home.for_points(
-  g,await calculate_pb_points(g) if points is None else points,
-  directory_links=links,raid_points=await calculate_raid_pb_points(g)
- )
+ return await Home.for_points(g,await calculate_pb_points(g) if points is None else points)
 
 
 def boss_directory_card(jump_links=None,*,page=None):
@@ -2881,6 +2928,17 @@ async def refresh_panel(g,activity=None):
    )
   except discord.HTTPException:
    logging.exception("Unable to refresh PB points panel")
+
+ if g==NOVUS_GUILD_ID:
+  raids=await store.raid_panel(g)
+  if raids:
+   try:
+    ch=bot.get_channel(raids["channel"]) or await bot.fetch_channel(raids["channel"])
+    msg=await ch.fetch_message(raids["message"])
+    view=await RaidTop10.make(g)
+    await msg.edit(**view.edit_options(msg),allowed_mentions=discord.AllowedMentions.none())
+   except discord.HTTPException:
+    logging.exception("Unable to refresh raids-only PB Top 10 panel")
 
  if activity in BOSSES:
   public_activities=[("Bosses",activity)]
