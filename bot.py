@@ -985,11 +985,9 @@ async def on_ready():
  if getattr(bot, "_startup_panels_refreshed", False):return
  bot._startup_panels_refreshed=True
  logging.info("Novus PB bot ready as %s (%s)",bot.user,bot.user.id)
- submission=SubmitModal()
- logging.info("PB submission options: types=%s boss_count=%s team_bosses_in_boss_dropdown=%s",
-              [option.label for option in submission.target_select.options],
-              len(submission.boss_select.options),
-              [option.value for option in submission.boss_select.options if option.value in TEAM_BOSS_SIZES])
+ logging.info("PB direct modals: raid_formats=%s standard_bosses=%s special_bosses=%s",
+              len(all_raid_submission_options()),len(standard_boss_submission_options()),
+              len(special_boss_submission_options()))
  try:
   await recover_existing_proofs()
  except Exception:
@@ -1422,9 +1420,9 @@ class Home(PBLayoutView):
    custom_id="pb:home:mine"
   )
   async def open_raid(i):
-   await i.response.send_message(view=RaidSubmissionPicker(),ephemeral=True)
+   await i.response.send_modal(AllRaidSubmitModal())
   async def open_boss(i):
-   await i.response.send_message(view=BossSubmissionPicker(),ephemeral=True)
+   await i.response.send_modal(BossSubmitModal())
   async def open_rules(i):
    await i.response.send_modal(RulesModal())
   raid_submit.callback=open_raid
@@ -2683,7 +2681,7 @@ class Browser(PBLayoutView):
   submit=ui.Button(label="Submit Boss PB",style=discord.ButtonStyle.success)
   rules=ui.Button(label="PB Rules",style=discord.ButtonStyle.danger)
   async def open_submit(i):
-   await i.response.send_message(view=BossSubmissionPicker(),ephemeral=True)
+   await i.response.send_modal(BossSubmitModal())
   async def open_rules(i):
    await i.response.send_modal(RulesModal())
   submit.callback=open_submit
@@ -4277,46 +4275,37 @@ class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
                              self.details_input,self.members_select)
 
 
-class BossSubmitModal(LoggedModal,title="NOVUS | Boss PB Submission"):
- def __init__(self,group="Bosses"):
-  if group not in BOSS_SUBMISSION_GROUPS:
-   raise ValueError("Unknown boss category")
+def all_raid_submission_options():
+ """All 22 existing raid brackets fit in one modal dropdown."""
+ return [
+  discord.SelectOption(
+   label=f"{RAID_LABELS[activity]} · {variant}",
+   value=f"{activity}|||{variant}",
+  )
+  for activity,variants in RAIDS.items() for variant in variants
+ ]
+
+
+class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
+ """Open all raid and format choices directly from the public submit button."""
+ def __init__(self):
   super().__init__(timeout=300)
-  self.group=group
-  self.boss_select=ui.Select(
-   placeholder="Choose boss",options=boss_submission_options(group),
-   min_values=1,max_values=1,required=True,custom_id="pb:submit:boss"
-  )
-  self.format_select=ui.Select(
-   placeholder="Standard, Normal, or Awakened",
-   options=boss_submission_format_options(),
-   min_values=0,max_values=1,required=False,custom_id="pb:submit:format"
-  )
-  self.team_size_select=ui.Select(
-   placeholder="Choose size for Nex or Hueycoatl",
-   options=boss_submission_team_size_options(),
-   min_values=0,max_values=1,required=False,custom_id="pb:submit:team-size"
+  self.raid_select=ui.Select(
+   placeholder="Select raid and format",
+   options=all_raid_submission_options(),
+   min_values=1,max_values=1,required=True,
+   custom_id="pb:submit:raid-format"
   )
   self.details_input=pb_time_field()
   self.members_select=pb_party_field()
   self.add_item(ui.Label(
-   text="Boss",
-   description="Gauntlet and Corrupted Gauntlet are separate choices.",
-   component=self.boss_select
-  ))
-  self.add_item(ui.Label(
-   text="Boss mode (if applicable)",
-   description="Normal or Awakened only for DT2 bosses. Otherwise leave blank.",
-   component=self.format_select
-  ))
-  self.add_item(ui.Label(
-   text="Team size (Nex / Hueycoatl only)",
-   description="Select the correct team size for Nex or Hueycoatl.",
-   component=self.team_size_select
+   text="Raid / format",
+   description="Choose TFA, CoX, ToB, or ToA and its exact mode / team size.",
+   component=self.raid_select
   ))
   self.add_item(ui.Label(
    text="PB time",
-   description="Use SS.ss or MM:SS.ss. The run date must appear in your proof.",
+   description="Use SS.ss or MM:SS.ss. The date must appear in the proof.",
    component=self.details_input
   ))
   self.add_item(ui.Label(
@@ -4326,75 +4315,123 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Boss PB Submission"):
   ))
 
  async def on_submit(self,i):
-  activity=self.boss_select.values[0]
-  selected_mode=next(iter(self.format_select.values),"__none__")
-  selected_size=next(iter(self.team_size_select.values),None)
-  if activity not in BOSS_SUBMISSION_GROUPS[self.group]:
-   return await i.response.send_message("Choose a valid boss.",ephemeral=True)
-  if activity in TEAM_BOSS_SIZES:
-   if selected_size not in TEAM_BOSS_SIZES[activity]:
-    valid=" or ".join(f"**{name}**" for name in TEAM_BOSS_SIZES[activity])
+  try:
+   activity,variant=self.raid_select.values[0].split("|||",1)
+  except (IndexError,ValueError):
+   return await i.response.send_message("Choose a raid and format.",ephemeral=True)
+  if activity not in RAIDS or variant not in RAIDS[activity]:
+   return await i.response.send_message("Choose a valid raid format.",ephemeral=True)
+  await submit_modal_details(i,"Raids",activity,variant,self.details_input,self.members_select)
+
+
+def standard_boss_submission_options():
+ """Single-variant bosses, including Gauntlet and Corrupted Gauntlet separately."""
+ return [
+  discord.SelectOption(label=activity,value=activity)
+  for activity,variants in sorted(BOSSES.items(),key=lambda item:item[0].casefold())
+  if variants==["Standard"]
+ ]
+
+
+def special_boss_submission_options():
+ """DT2 modes use the mode dropdown; Nex/Huey team sizes are explicit options."""
+ choices=[
+  discord.SelectOption(label=activity,value=activity)
+  for activity in sorted(BOSSES,key=str.casefold)
+  if activity not in TEAM_BOSS_SIZES and set(BOSSES[activity])=={"Normal","Awakened"}
+ ]
+ choices.extend(
+  discord.SelectOption(label=f"{activity} · {size}",value=f"{activity}|||{size}")
+  for activity,formats in TEAM_BOSS_SIZES.items() for size in formats
+ )
+ return choices
+
+
+class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
+ """Five modal fields allow every boss without an extra category picker."""
+ def __init__(self):
+  super().__init__(timeout=300)
+  self.boss_select=ui.Select(
+   placeholder="Select a standard boss",
+   options=standard_boss_submission_options(),
+   min_values=0,max_values=1,required=False,
+   custom_id="pb:submit:boss-standard"
+  )
+  self.special_boss_select=ui.Select(
+   placeholder="Select DT2, Nex or Hueycoatl",
+   options=special_boss_submission_options(),
+   min_values=0,max_values=1,required=False,
+   custom_id="pb:submit:boss-special"
+  )
+  self.format_select=ui.Select(
+   placeholder="Standard, Normal, or Awakened",
+   options=boss_submission_format_options(),
+   min_values=0,max_values=1,required=False,
+   custom_id="pb:submit:format"
+  )
+  self.details_input=pb_time_field()
+  self.members_select=pb_party_field()
+  self.add_item(ui.Label(
+   text="Standard bosses",
+   description="Choose one boss here, OR choose a special boss below.",
+   component=self.boss_select
+  ))
+  self.add_item(ui.Label(
+   text="DT2 / Nex / Hueycoatl",
+   description="Choose a special boss instead. Nex/Huey include team size here.",
+   component=self.special_boss_select
+  ))
+  self.add_item(ui.Label(
+   text="Boss mode (if applicable)",
+   description="Normal or Awakened for DT2 bosses; otherwise Standard (no mode).",
+   component=self.format_select
+  ))
+  self.add_item(ui.Label(
+   text="PB time",
+   description="Use SS.ss or MM:SS.ss. The date must appear in the proof.",
+   component=self.details_input
+  ))
+  self.add_item(ui.Label(
+   text="Party members",
+   description="Select every Novus member in the run.",
+   component=self.members_select
+  ))
+
+ async def on_submit(self,i):
+  standard=next(iter(self.boss_select.values),None)
+  special=next(iter(self.special_boss_select.values),None)
+  mode=next(iter(self.format_select.values),"__none__")
+  if bool(standard)==bool(special):
+   return await i.response.send_message(
+    "Select exactly one boss from either dropdown, not both.",ephemeral=True
+   )
+  if standard:
+   if standard not in BOSSES or BOSSES[standard]!=["Standard"]:
+    return await i.response.send_message("Choose a valid standard boss.",ephemeral=True)
+   if mode!="__none__":
     return await i.response.send_message(
-     f"Choose {valid} in Team size for **{activity}**.",ephemeral=True
+     f"**{standard}** uses Standard (no mode).",ephemeral=True
     )
-   if selected_mode!="__none__":
-    return await i.response.send_message(
-     "Nex and Hueycoatl use team size, not Normal or Awakened mode.",ephemeral=True
-    )
-   variant=selected_size
-  elif len(BOSSES[activity])==1:
-   if selected_mode!="__none__" or selected_size is not None:
-    return await i.response.send_message(
-     f"**{activity}** uses Standard (no mode) and no team-size bracket.",ephemeral=True
-    )
-   variant=BOSSES[activity][0]
+   activity,variant=standard,"Standard"
   else:
-   if selected_mode not in BOSSES[activity]:
-    choices=" or ".join(f"**{mode}**" for mode in BOSSES[activity])
-    return await i.response.send_message(
-     f"Choose {choices} for **{activity}**.",ephemeral=True
-    )
-   if selected_size is not None:
-    return await i.response.send_message(
-     "DT2 bosses use Normal or Awakened mode, not a team-size bracket.",ephemeral=True
-    )
-   variant=selected_mode
-  await submit_modal_details(i,"Bosses",activity,variant,
-                             self.details_input,self.members_select)
-
-class RaidSubmissionPicker(PBLayoutView):
- """Pick from just four raids, then show only that raid's formats."""
- def __init__(self):
-  super().__init__(timeout=180)
-  container=ui.Container(accent_colour=GOLD)
-  container.add_item(ui.TextDisplay("## ✦ SUBMIT RAID PB\nChoose your raid to see its formats."))
-  row=ui.ActionRow()
-  for activity in RAIDS:
-   button=ui.Button(label=RAID_LABELS[activity],style=discord.ButtonStyle.primary)
-   async def open_raid(i,raid=activity):
-    await i.response.send_modal(RaidSubmitModal(raid))
-   button.callback=open_raid
-   row.add_item(button)
-  container.add_item(row)
-  self.add_item(container)
-
-
-class BossSubmissionPicker(PBLayoutView):
- """Pick a boss category so Discord never has to show more than 25 choices."""
- def __init__(self):
-  super().__init__(timeout=180)
-  container=ui.Container(accent_colour=GOLD)
-  container.add_item(ui.TextDisplay("## ✦ SUBMIT BOSS PB\nSelect the boss category."))
-  row=ui.ActionRow()
-  for group in BOSS_SUBMISSION_GROUPS:
-   label="Other Bosses" if group=="Bosses" else group
-   button=ui.Button(label=label,style=discord.ButtonStyle.primary)
-   async def open_group(i,category=group):
-    await i.response.send_modal(BossSubmitModal(category))
-   button.callback=open_group
-   row.add_item(button)
-  container.add_item(row)
-  self.add_item(container)
+   if "|||" in special:
+    activity,variant=special.split("|||",1)
+    if activity not in TEAM_BOSS_SIZES or variant not in TEAM_BOSS_SIZES[activity]:
+     return await i.response.send_message("Choose a valid Nex or Hueycoatl size.",ephemeral=True)
+    if mode!="__none__":
+     return await i.response.send_message(
+      "Nex and Hueycoatl use team sizes, not Normal/Awakened mode.",ephemeral=True
+     )
+   else:
+    activity=special
+    if activity not in BOSSES or set(BOSSES[activity])!={"Normal","Awakened"}:
+     return await i.response.send_message("Choose a valid special boss.",ephemeral=True)
+    if mode not in BOSSES[activity]:
+     return await i.response.send_message(
+      f"Choose Normal or Awakened for **{activity}**.",ephemeral=True
+     )
+    variant=mode
+  await submit_modal_details(i,"Bosses",activity,variant,self.details_input,self.members_select)
 
 
 class SubmissionTypePicker(PBLayoutView):
@@ -4407,9 +4444,9 @@ class SubmissionTypePicker(PBLayoutView):
   raid=ui.Button(label="Submit Raid PB",style=discord.ButtonStyle.success)
   boss=ui.Button(label="Submit Boss PB",style=discord.ButtonStyle.success)
   async def open_raid(i):
-   await i.response.edit_message(view=RaidSubmissionPicker())
+   await i.response.send_modal(AllRaidSubmitModal())
   async def open_boss(i):
-   await i.response.edit_message(view=BossSubmissionPicker())
+   await i.response.send_modal(BossSubmitModal())
   raid.callback=open_raid
   boss.callback=open_boss
   row.add_item(raid)
