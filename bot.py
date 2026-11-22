@@ -4413,144 +4413,120 @@ async def pbpost(i:discord.Interaction):
   )
 
 
+
+async def rebuild_public_pb_panel(channel,g):
+ """Replace the public PB channel in order: overall, raids, two directories, PB boards."""
+ old_records=[
+  await store.banner(g),await store.panel(g),await store.raid_panel(g),
+  await store.primary_directory(g),await store.boss_panel(g),
+  await store.snapshot_panel(g),await store.footer(g),
+  *(await store.boss_boards(g)),*(await store.raid_pages(g)),
+ ]
+ # Keep old posts visible while building the replacement board.
+ await store.clear_boss_boards(g)
+ mentions=discord.AllowedMentions.none()
+ home=await Home.make(g)
+ panel_msg=await channel.send(**home.send_options(),allowed_mentions=mentions)
+ split_directory=g==NOVUS_GUILD_ID
+ raid_msg=None
+ first_directory=None
+ if split_directory:
+  raid_view=await RaidTop10.make(g)
+  raid_msg=await channel.send(**raid_view.send_options(),allowed_mentions=mentions)
+  first_directory=await channel.send(view=BossDirectory(page=1),allowed_mentions=mentions)
+ boss_msg=await channel.send(
+  view=BossDirectory(page=2 if split_directory else None),
+  allowed_mentions=mentions
+ )
+
+ jump_links={}
+ for activity in ("Inferno","Fortis Colosseum","Fight Caves",*RAIDS):
+  board_msg=await write_linked_board(channel,g,activity)
+  await store.set_boss_board(g,activity,channel.id,board_msg.id)
+  jump_links[activity]=board_msg.jump_url
+ for activity in PB_DIRECTORY_ORDER:
+  if activity not in BOSSES or activity in ("Inferno","Fortis Colosseum","Fight Caves"):
+   continue
+  board_msg=await write_linked_board(channel,g,activity)
+  await store.set_boss_board(g,activity,channel.id,board_msg.id)
+  jump_links[activity]=board_msg.jump_url
+
+ if first_directory is not None:
+  await first_directory.edit(view=BossDirectory(jump_links,page=1),allowed_mentions=mentions)
+ await boss_msg.edit(
+  view=BossDirectory(jump_links,page=2 if split_directory else None),
+  allowed_mentions=mentions
+ )
+ async with PUBLIC_PROOF_LOCK:
+  leaders={raid:await store.raid_top3(g,raid) for raid in RAIDS}
+  recent=await store.recent_approved(g,3)
+  snapshot_msg=(await publish_board_pages(
+   channel,g,SNAPSHOT_CONTINUATION_KEY,None,
+   snapshot_page_plan(leaders,recent),mentions
+  ))[0]
+ footer_msg=await channel.send(pb_scroll_to_top_text(panel_msg.jump_url),allowed_mentions=mentions)
+
+ await store.set_panel(g,channel.id,panel_msg.id)
+ if raid_msg is not None:
+  await store.set_raid_panel(g,channel.id,raid_msg.id)
+ if first_directory is not None:
+  await store.set_primary_directory(g,channel.id,first_directory.id)
+ await store.set_boss_panel(g,channel.id,boss_msg.id)
+ await store.set_snapshot_panel(g,channel.id,snapshot_msg.id)
+ await store.set_footer(g,channel.id,footer_msg.id)
+ async with store.lock:
+  await store.conn.execute("DELETE FROM panel_banners WHERE guild=?",(g,))
+  await store.conn.commit()
+
+ # Retire only the old, previously tracked messages after the new board is complete.
+ seen=set()
+ for record in old_records:
+  if not record:
+   continue
+  key=(record["channel"],record["message"])
+  if key in seen:
+   continue
+  seen.add(key)
+  try:
+   old_channel=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
+   old_message=await old_channel.fetch_message(record["message"])
+   if old_message.author.id==bot.user.id:
+    await old_message.delete()
+  except discord.NotFound:
+   pass
+  except discord.HTTPException:
+   logging.exception("Could not retire previous PB message %s",record["message"])
+ return panel_msg
+
+
 @bot.tree.command(name="pbpanel",description="Create or refresh the persistent PB panel in this channel")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
 async def pbpanel(i:discord.Interaction):
- if not is_staff(i):return await i.response.send_message("Staff only.",ephemeral=True)
+ if not is_staff(i):
+  return await i.response.send_message("Staff only.",ephemeral=True)
  await i.response.defer(ephemeral=True)
  await fetch_activity_emojis(i.guild)
  me=i.guild.me
  perms=i.channel.permissions_for(me) if me else None
  if not perms or not perms.view_channel or not perms.send_messages:
   return await i.followup.send(
-   "I need **View Channel** and **Send Messages** in this channel before I can create the PB panel.",
+   "I need View Channel and Send Messages in this channel before I can create the PB panel.",
    ephemeral=True
   )
-
- # Remove the currently tracked PB board messages before recreating them.
- tracked_records=[
-  await store.banner(i.guild_id),
-  await store.panel(i.guild_id),
-  await store.boss_panel(i.guild_id),
-  await store.snapshot_panel(i.guild_id),
-  await store.footer(i.guild_id),
- ]
- tracked_records.extend(
-  await store.boss_boards(i.guild_id)
- )
- tracked_records.extend(await store.raid_pages(i.guild_id))
-
- seen_messages=set()
- for record in tracked_records:
-  if not record:
-   continue
-  key=(record["channel"],record["message"])
-  if key in seen_messages:
-   continue
-  seen_messages.add(key)
-  try:
-   ch=bot.get_channel(record["channel"]) or await bot.fetch_channel(record["channel"])
-   msg=await ch.fetch_message(record["message"])
-   await msg.delete()
-  except discord.NotFound:
-   pass
-  except discord.HTTPException as exc:
-   logging.warning("Could not delete an old PB card | guild_id=%s message_id=%s status=%s code=%s",
-                   i.guild_id,record["message"],exc.status,exc.code)
-
- await store.clear_boss_boards(i.guild_id)
-
  try:
-  view=await Home.make(i.guild_id)
-  panel_msg=await i.channel.send(**view.send_options())
-
-  # Post a temporary directory first so it stays above the leaderboards.
-  split_directory=i.guild_id==NOVUS_GUILD_ID
-  boss_msg=await i.channel.send(view=BossDirectory(page=2 if split_directory else None))
-
-  jump_links={}
-
-  # Minigames first.
-  for activity in ("Inferno","Fortis Colosseum","Fight Caves"):
-   board_msg=await write_linked_board(i.channel,i.guild_id,activity)
-   await store.set_boss_board(
-    i.guild_id,
-    activity,
-    i.channel_id,
-    board_msg.id
-   )
-   jump_links[activity]=board_msg.jump_url
-
-  # Then the four raid boards, each showing Top 1-5 per format.
-  for activity in RAIDS:
-   board_msg=await write_linked_board(i.channel,i.guild_id,activity)
-   await store.set_boss_board(
-    i.guild_id,
-    activity,
-    i.channel_id,
-    board_msg.id
-   )
-   jump_links[activity]=board_msg.jump_url
-
-  # Then the remaining bosses in the same order as the Boss Directory.
-  for activity in PB_DIRECTORY_ORDER:
-   if activity not in BOSSES or activity in ("Inferno","Fortis Colosseum","Fight Caves"):
-    continue
-   board_msg=await write_linked_board(i.channel,i.guild_id,activity)
-   await store.set_boss_board(
-    i.guild_id,
-    activity,
-    i.channel_id,
-    board_msg.id
-   )
-   jump_links[activity]=board_msg.jump_url
-
-  # Turn each boss name into a native Discord jump link.
-  await boss_msg.edit(
-   view=BossDirectory(jump_links,page=2 if split_directory else None),
-   allowed_mentions=discord.AllowedMentions.none()
-  )
-  if split_directory:
-   view=await Home.for_points(
-    i.guild_id,await calculate_pb_points(i.guild_id),directory_links=jump_links,
-    raid_points=await calculate_raid_pb_points(i.guild_id)
-   )
-   await panel_msg.edit(**view.edit_options(panel_msg),allowed_mentions=discord.AllowedMentions.none())
-
-  async with PUBLIC_PROOF_LOCK:
-   leaders={raid:await store.raid_top3(i.guild_id,raid) for raid in RAIDS}
-   recent=await store.recent_approved(i.guild_id,3)
-   snapshot_msg=(await publish_board_pages(
-    i.channel,i.guild_id,SNAPSHOT_CONTINUATION_KEY,None,
-    snapshot_page_plan(leaders,recent),discord.AllowedMentions.none()
-   ))[0]
-  footer_msg=await i.channel.send(
-   pb_scroll_to_top_text(panel_msg.jump_url),
-   allowed_mentions=discord.AllowedMentions.none()
-  )
-
-  await store.set_panel(i.guild_id,i.channel_id,panel_msg.id)
-  await store.set_boss_panel(i.guild_id,i.channel_id,boss_msg.id)
-  await store.set_snapshot_panel(i.guild_id,i.channel_id,snapshot_msg.id)
-  await store.set_footer(i.guild_id,i.channel_id,footer_msg.id)
-  async with store.lock:
-   await store.conn.execute("DELETE FROM panel_banners WHERE guild=?",(i.guild_id,))
-   await store.conn.commit()
-  await i.followup.send(
-   "Refreshed the Novus PB board with jump-linked raid and boss leaderboards.",
-   ephemeral=True
-  )
+  await rebuild_public_pb_panel(i.channel,i.guild_id)
+  await i.followup.send("Refreshed the Novus PB board with overall and raids Top 10 posts, directories, and PB leaderboards.",ephemeral=True)
  except discord.Forbidden:
   logging.exception("PB panel send forbidden in channel %s",i.channel_id)
   await i.followup.send(
-   "Discord blocked the PB board post. Give Novus PB **View Channel**, **Send Messages**, and **Read Message History** here, then run /pbpanel again.",
+   "Discord blocked the PB board post. Check Novus PB permissions, then run /pbpanel again.",
    ephemeral=True
   )
- except Exception as e:
+ except Exception as exc:
   logging.exception("PB panel creation failed")
   await i.followup.send(
-   f"PB panel creation failed: `{type(e).__name__}`. Check the Railway log for the matching traceback.",
+   f"PB panel creation failed: {type(exc).__name__}. Check Railway logs.",
    ephemeral=True
   )
 
