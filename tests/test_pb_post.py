@@ -44,7 +44,7 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(
             [button.label for button in actions[0].children],
-            ["Submit PB", "PB Rules", "My PBs"],
+            ["Submit Raid PB", "Submit Boss PB", "PB Rules", "My PBs"],
         )
         self.assertLessEqual(len(panel.children), 10)
 
