@@ -32,7 +32,7 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
             child.content for child in panel.children
             if isinstance(child, bot.ui.TextDisplay)
         )
-        self.assertEqual(text.splitlines().count("## ✦ NOVUS TOP 10"), 1)
+        self.assertEqual(text.splitlines().count(bot.PB_TOP10_TITLE), 1)
         self.assertNotIn("### TOP 10", text)
         self.assertNotIn("PERSONAL BESTS", text)
         self.assertIn("#1 <@123> · **20 pts**", text)
@@ -70,7 +70,7 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         kwargs = channel.send.await_args.kwargs
         self.assertEqual(kwargs["view"].to_components(), current.to_components())
         text = str(kwargs["view"].to_components())
-        self.assertEqual(text.count("## ✦ NOVUS TOP 10"), 1)
+        self.assertEqual(text.count(bot.PB_TOP10_TITLE), 1)
         self.assertNotIn("### TOP 10", text)
         self.assertFalse(kwargs["allowed_mentions"].everyone)
         self.assertFalse(kwargs["allowed_mentions"].users)
