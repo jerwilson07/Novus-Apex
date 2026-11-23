@@ -2827,7 +2827,7 @@ class Review(PBLayoutView):
     ui.TextDisplay(
      f"## ✦ NOVUS | PB REVIEW\n"
      f"**{clean(r['activity'])}** · {clean(r['variant'])}\n"
-     f"-# Submission #{r['id']} · Submitted by <@{r['submitter']}>"
+     f"-# Submission #{r['id']} · Submitted by {submitted_review_members(r)}"
     ),
     accessory=status_badge
    )
@@ -2851,7 +2851,7 @@ class Review(PBLayoutView):
           "NO RANK CHANGE" if placement=="unchanged" else "OUTSIDE TOP 5")
    panel.add_item(ui.Section(
     ui.TextDisplay("-# SUBMITTED PB\n"
-     f"**{submitted_review_members(r)}** · **{fmt(r['ms'])}**\n"
+     f"**{fmt(r['ms'])}**\n"
      f"-# {difference}"),
     accessory=ui.Button(label=label,disabled=True,
      style=discord.ButtonStyle.success if placement==1 else discord.ButtonStyle.secondary,
@@ -2864,7 +2864,7 @@ class Review(PBLayoutView):
    ))
   else:
    panel.add_item(ui.TextDisplay(
-    "-# SUBMITTED PB\n" f"**{submitted_review_members(r)}** · **{fmt(r['ms'])}**"
+    "-# SUBMITTED PB\n" f"**{fmt(r['ms'])}**"
    ))
 
   p=r["proof"]
