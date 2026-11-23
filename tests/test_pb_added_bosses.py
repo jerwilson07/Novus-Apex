@@ -45,17 +45,16 @@ class AddedBossesLayoutTests(TestCase):
         with (patch.object(bot, "GUILD_ID", guild.id),
               patch.object(bot.bot, "get_guild", return_value=guild),
               patch.dict(bot.ACTIVITY_EMOJI_CACHE, {guild.id: emojis})):
-            first = bot.Home(points,guild_id=guild.id,directory_links=links)
+            first = bot.BossDirectory(links,page=1)
             second = bot.BossDirectory(links,page=2)
             ordinary = bot.Home(points,guild_id=guild.id)
         def display_text(container):
             return "\n".join(item.content for item in container.children if isinstance(item,bot.ui.TextDisplay))
-        top, directory = first.children
+        directory = first.children[0]
         title, divider, entries = directory.children
         self.assertEqual(title.content, "## Boss Directory")
         self.assertEqual(divider.items[0].media.url, bot.PB_DIRECTORY_DIVIDER_URL)
         self.assertNotIn("Select an activity", entries.content)
-        self.assertEqual(display_text(top), display_text(ordinary.children[0]))
         self.assertEqual(len(ordinary.children), 1)
         first_part = display_text(directory)
         second_part = display_text(second.children[0])
