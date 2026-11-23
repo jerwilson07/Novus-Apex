@@ -1292,7 +1292,7 @@ async def on_ready():
 
  # Refresh legacy staff cards in-place, including approved and denied reviews.
  # This runs after proof-card recovery to avoid racing existing proof edits.
- start_logged_task(refresh_existing_staff_review_cards_once(),name="pb-staff-review-roster-backfill")
+ start_logged_task(retry_existing_staff_review_cards(),name="pb-staff-review-roster-backfill")
 
 def is_staff(i):
  if not i.guild or not isinstance(i.user,discord.Member):return False
@@ -3001,8 +3001,9 @@ async def refresh_existing_staff_review_cards_once():
  """Restyle all previously posted review messages in place without touching PB records.
 
  Keep their status, review controls and proof attachments intact. Retry any
- transient failures on a future startup rather than marking an incomplete job done.
+ transient failures after the Discord old-message edit limit resets.
  """
+ all_complete=True
  for guild in bot.guilds:
   operation=f"staff_review_full_roster_time_only_v1_{guild.id}"
   if await store.one("SELECT name FROM one_time_pb_migrations WHERE name=?",(operation,)):
@@ -3049,9 +3050,17 @@ async def refresh_existing_staff_review_cards_once():
     await asyncio.sleep(1.4)
    except discord.NotFound:
     missing+=1
-   except (discord.HTTPException,aiosqlite.Error,ValueError,TypeError):
+   except discord.HTTPException as exc:
+    failed+=1
+    if exc.status==429 or exc.code==30046:
+     logging.warning("Pausing staff card backfill at PB #%s due to Discord edit limits",r["id"])
+     break
+    logging.exception("Could not refresh previous staff review for PB #%s",r["id"])
+   except (aiosqlite.Error,ValueError,TypeError):
     failed+=1
     logging.exception("Could not refresh previous staff review for PB #%s",r["id"])
+  if failed:
+   all_complete=False
   if failed==0:
    async with store.lock:
     await store.conn.execute(
@@ -3062,6 +3071,20 @@ async def refresh_existing_staff_review_cards_once():
   logging.info("Staff review roster backfill: guild=%s total=%s updated=%s already=%s "
                "missing=%s failed=%s complete=%s",
                guild.id,len(rows),updated,already,missing,failed,failed==0)
+ return all_complete
+
+
+async def retry_existing_staff_review_cards():
+ """Retry the incomplete historical review backfill at an hourly pace."""
+ for attempt in range(1,25):
+  try:
+   if await refresh_existing_staff_review_cards_once():
+    return
+  except (discord.HTTPException,aiosqlite.Error):
+   logging.exception("Staff review backfill pass %s failed",attempt)
+  if attempt<24:
+   await asyncio.sleep(3600)
+ logging.warning("Staff review backfill incomplete after retry budget")
 
 
 async def update_review(r):
