@@ -26,22 +26,26 @@ def record(**overrides):
 
 
 class PBLayoutTests(unittest.TestCase):
-    def test_tfa_five_man_is_submittable_and_fits_full_leaderboard(self):
+    def test_tfa_six_man_is_submittable_and_fits_full_leaderboard(self):
         activity = "The Fractured Archive"
         variants = bot.RAIDS[activity]
-        self.assertEqual(variants, ["Solo", "Duo", "Trio", "4-Man", "5-Man"])
+        self.assertEqual(variants, ["Solo", "Duo", "Trio", "4-Man", "5-Man", "6-Man"])
         options = bot.submission_format_options()
-        self.assertIn("5-Man", [option.value for option in options])
+        self.assertIn("6-Man", [option.value for option in options])
         self.assertLessEqual(len(options), 25)
-        self.assertEqual(bot.team_size("Raids", "5-Man", activity), 5)
+        self.assertEqual(bot.team_size("Raids", "6-Man", activity), 6)
 
         # Exercise the Discord component budget with a record in every bracket.
         board = bot.RaidLeaderboard(activity, [
             (variant, [record(id=index, activity=activity, variant=variant)])
             for index, variant in enumerate(variants, 1)
         ])
-        self.assertEqual(len(board.children), 6)
-        self.assertEqual(board.children[-1].children[0].content, "### 5-Man")
+        self.assertEqual(len(board.children), 7)
+        self.assertLessEqual(board.total_children_count, 40)
+        headings = [line for item in board.walk_children()
+                    if isinstance(item, bot.ui.TextDisplay)
+                    for line in item.content.splitlines() if line.startswith("### ")]
+        self.assertEqual(headings, [f"### {variant}" for variant in variants])
 
     def test_raid_order_and_tfa_name(self):
         self.assertEqual(
@@ -339,7 +343,9 @@ class PBLayoutTests(unittest.TestCase):
             ("The Whisperer", "Awakened", "The Whisperer · Awakened"),
             ("Chambers of Xeric", "Challenge Mode · Trio", "CoX · Challenge Mode · Trio"),
             ("Theatre of Blood", "Hard Mode · 5-Man", "ToB · Hard Mode · 5-Man"),
+            ("The Fractured Archive", "6-Man", "TFA"),
             ("Tombs of Amascut", "Expert · Solo", "ToA · Expert · Solo"),
+            ("Tombs of Amascut", "Expert · Duo", "ToA · Expert · Duo"),
         )
         for activity, variant, expected in cases:
             with self.subTest(activity=activity, variant=variant):
