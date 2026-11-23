@@ -4213,20 +4213,32 @@ def boss_submission_team_size_options():
          for size in ("Duo","Trio","5-Man")]
 
 
-async def submit_modal_details(i,category,activity,variant,details_input,members_select):
+async def submit_modal_details(i,category,activity,variant,details_input,members_select,proof_upload=None):
  parsed=parse_submission_details(details_input.value)
  if not parsed:
   return await i.response.send_message(
    "Use **SS.ss or MM:SS.ss**. The run date must be visible in your proof.",
    ephemeral=True
   )
+ proof=""
+ attachment=next(iter(proof_upload.values),None) if proof_upload is not None else None
+ if attachment is not None:
+  if not (attachment.content_type or "").startswith(("image/","video/")):
+   return await i.response.send_message("Only image/video proof files are accepted.",ephemeral=True)
+  if attachment.size>20*1024*1024:
+   return await i.response.send_message("Proof must be 20 MiB or smaller.",ephemeral=True)
+  if not discord_attachment_key(attachment.url):
+   return await i.response.send_message(
+    "Discord did not return a valid proof attachment. Try another file.",ephemeral=True
+   )
+  proof=attachment.url
  pb_date,time_value=parsed
- await submit(i,category,activity,variant,time_value,pb_date,members_select.values)
+ await submit(i,category,activity,variant,time_value,pb_date,members_select.values,proof=proof)
 
 
 def pb_time_field():
  return ui.TextInput(
-  placeholder="30.60 or 14:32.60",max_length=20,
+  max_length=20,
   custom_id="pb:submit:details"
  )
 
@@ -4235,6 +4247,13 @@ def pb_party_field():
  return ui.UserSelect(
   placeholder="Search Discord members",min_values=1,max_values=8,
   custom_id="pb:submit:members"
+ )
+
+
+def pb_proof_field():
+ return ui.FileUpload(
+  custom_id="pb:submit:proof",required=False,
+  min_values=0,max_values=1
  )
 
 
@@ -4252,6 +4271,7 @@ class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
   )
   self.details_input=pb_time_field()
   self.members_select=pb_party_field()
+  self.proof_upload=pb_proof_field()
   self.add_item(ui.Label(
    text=f"{RAID_LABELS[activity]} format",
    description="Choose the exact raid mode and team size.",
@@ -4267,6 +4287,11 @@ class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
    description="Select every Novus member in the run.",
    component=self.members_select
   ))
+  self.add_item(ui.Label(
+   text="PB proof (optional)",
+   description="Upload the dated screenshot or clip now, or attach it later.",
+   component=self.proof_upload
+  ))
 
  async def on_submit(self,i):
   selected=self.format_select.values[0]
@@ -4275,7 +4300,7 @@ class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
     "Choose a valid format for this raid.",ephemeral=True
    )
   await submit_modal_details(i,"Raids",self.activity,selected,
-                             self.details_input,self.members_select)
+                             self.details_input,self.members_select,self.proof_upload)
 
 
 def all_raid_submission_options():
@@ -4301,6 +4326,7 @@ class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
   )
   self.details_input=pb_time_field()
   self.members_select=pb_party_field()
+  self.proof_upload=pb_proof_field()
   self.add_item(ui.Label(
    text="Raid / format",
    description="Choose TFA, CoX, ToB, or ToA and its exact mode / team size.",
@@ -4316,6 +4342,11 @@ class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
    description="Select every Novus member in the run.",
    component=self.members_select
   ))
+  self.add_item(ui.Label(
+   text="PB proof (optional)",
+   description="Upload the dated screenshot or clip now, or attach it later.",
+   component=self.proof_upload
+  ))
 
  async def on_submit(self,i):
   try:
@@ -4324,7 +4355,8 @@ class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
    return await i.response.send_message("Choose a raid and format.",ephemeral=True)
   if activity not in RAIDS or variant not in RAIDS[activity]:
    return await i.response.send_message("Choose a valid raid format.",ephemeral=True)
-  await submit_modal_details(i,"Raids",activity,variant,self.details_input,self.members_select)
+  await submit_modal_details(i,"Raids",activity,variant,
+                             self.details_input,self.members_select,self.proof_upload)
 
 
 def standard_boss_submission_options():
@@ -4337,11 +4369,12 @@ def standard_boss_submission_options():
 
 
 def special_boss_submission_options():
- """DT2 modes use the mode dropdown; Nex/Huey team sizes are explicit options."""
+ """Combine DT2 Normal/Awakened and Nex/Huey sizes so proof fits in the modal."""
  choices=[
-  discord.SelectOption(label=activity,value=activity)
+  discord.SelectOption(label=f"{activity} · {mode}",value=f"{activity}|||{mode}")
   for activity in sorted(BOSSES,key=str.casefold)
   if activity not in TEAM_BOSS_SIZES and set(BOSSES[activity])=={"Normal","Awakened"}
+  for mode in BOSSES[activity]
  ]
  choices.extend(
   discord.SelectOption(label=f"{activity} · {size}",value=f"{activity}|||{size}")
@@ -4351,7 +4384,7 @@ def special_boss_submission_options():
 
 
 class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
- """Five modal fields allow every boss without an extra category picker."""
+ """Five modal fields: two boss dropdowns, PB time, party and optional proof."""
  def __init__(self):
   super().__init__(timeout=300)
   self.boss_select=ui.Select(
@@ -4361,33 +4394,23 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
    custom_id="pb:submit:boss-standard"
   )
   self.special_boss_select=ui.Select(
-   placeholder="Select DT2, Nex or Hueycoatl",
+   placeholder="Select DT2 mode, Nex or Hueycoatl size",
    options=special_boss_submission_options(),
    min_values=0,max_values=1,required=False,
    custom_id="pb:submit:boss-special"
   )
-  self.format_select=ui.Select(
-   placeholder="Standard, Normal, or Awakened",
-   options=boss_submission_format_options(),
-   min_values=0,max_values=1,required=False,
-   custom_id="pb:submit:format"
-  )
   self.details_input=pb_time_field()
   self.members_select=pb_party_field()
+  self.proof_upload=pb_proof_field()
   self.add_item(ui.Label(
    text="Standard bosses",
-   description="Choose one boss here, OR choose a special boss below.",
+   description="Choose a standard boss here, OR one option from below.",
    component=self.boss_select
   ))
   self.add_item(ui.Label(
    text="DT2 / Nex / Hueycoatl",
-   description="Choose a special boss instead. Nex/Huey include team size here.",
+   description="DT2: choose Normal or Awakened. Nex/Huey: choose team size.",
    component=self.special_boss_select
-  ))
-  self.add_item(ui.Label(
-   text="Boss mode (if applicable)",
-   description="Normal or Awakened for DT2 bosses; otherwise Standard (no mode).",
-   component=self.format_select
   ))
   self.add_item(ui.Label(
    text="PB time",
@@ -4399,11 +4422,15 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
    description="Select every Novus member in the run.",
    component=self.members_select
   ))
+  self.add_item(ui.Label(
+   text="PB proof (optional)",
+   description="Upload the dated screenshot or clip now, or attach it later.",
+   component=self.proof_upload
+  ))
 
  async def on_submit(self,i):
   standard=next(iter(self.boss_select.values),None)
   special=next(iter(self.special_boss_select.values),None)
-  mode=next(iter(self.format_select.values),"__none__")
   if bool(standard)==bool(special):
    return await i.response.send_message(
     "Select exactly one boss from either dropdown, not both.",ephemeral=True
@@ -4411,30 +4438,23 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
   if standard:
    if standard not in BOSSES or BOSSES[standard]!=["Standard"]:
     return await i.response.send_message("Choose a valid standard boss.",ephemeral=True)
-   if mode!="__none__":
-    return await i.response.send_message(
-     f"**{standard}** uses Standard (no mode).",ephemeral=True
-    )
    activity,variant=standard,"Standard"
   else:
-   if "|||" in special:
+   try:
     activity,variant=special.split("|||",1)
-    if activity not in TEAM_BOSS_SIZES or variant not in TEAM_BOSS_SIZES[activity]:
-     return await i.response.send_message("Choose a valid Nex or Hueycoatl size.",ephemeral=True)
-    if mode!="__none__":
+   except ValueError:
+    return await i.response.send_message("Choose a boss and its format.",ephemeral=True)
+   if activity in TEAM_BOSS_SIZES:
+    if variant not in TEAM_BOSS_SIZES[activity]:
      return await i.response.send_message(
-      "Nex and Hueycoatl use team sizes, not Normal/Awakened mode.",ephemeral=True
+      "Choose a valid Nex or Hueycoatl team size.",ephemeral=True
      )
-   else:
-    activity=special
-    if activity not in BOSSES or set(BOSSES[activity])!={"Normal","Awakened"}:
-     return await i.response.send_message("Choose a valid special boss.",ephemeral=True)
-    if mode not in BOSSES[activity]:
-     return await i.response.send_message(
-      f"Choose Normal or Awakened for **{activity}**.",ephemeral=True
-     )
-    variant=mode
-  await submit_modal_details(i,"Bosses",activity,variant,self.details_input,self.members_select)
+   elif activity not in BOSSES or set(BOSSES[activity])!={"Normal","Awakened"} or variant not in BOSSES[activity]:
+    return await i.response.send_message(
+     "Choose a valid DT2 boss and Normal or Awakened mode.",ephemeral=True
+    )
+  await submit_modal_details(i,"Bosses",activity,variant,
+                             self.details_input,self.members_select,self.proof_upload)
 
 
 class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
@@ -4466,7 +4486,6 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    custom_id="pb:submit:boss"
   )
   self.details_input=ui.TextInput(
-   placeholder="30.60 or 14:32.60",
    max_length=20,
    custom_id="pb:submit:details"
   )
