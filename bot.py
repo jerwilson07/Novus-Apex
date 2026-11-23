@@ -1290,6 +1290,10 @@ async def on_ready():
    except discord.HTTPException:
     logging.exception("Could not refresh PB banner in channel %s",tracked["channel"])
 
+ # Refresh legacy staff cards in-place, including approved and denied reviews.
+ # This runs after proof-card recovery to avoid racing existing proof edits.
+ start_logged_task(refresh_existing_staff_review_cards_once(),name="pb-staff-review-roster-backfill")
+
 def is_staff(i):
  if not i.guild or not isinstance(i.user,discord.Member):return False
  m=i.user
@@ -2919,7 +2923,7 @@ class Review(PBLayoutView):
   self.add_item(panel)
 
  @classmethod
- async def make(cls,r):
+ async def make(cls,r,*,archived_filename=None):
   leader=None
   placement=None
   if r["status"] in ("pending","awaiting_proof"):
@@ -2937,7 +2941,7 @@ class Review(PBLayoutView):
    if placement is None:
     all_unique=unique_fn(candidates,len(candidates))
     placement="unchanged" if not any(item["id"]==r["id"] for item in all_unique) else "outside"
-  return cls(r,leader,placement)
+  return cls(r,leader,placement,archived_filename=archived_filename)
 
 
 async def refresh_panel(g,activity=None):
@@ -2991,6 +2995,73 @@ async def refresh_panel(g,activity=None):
 
  await refresh_proof_snapshot(g)
  await repair_public_board_order(g)
+
+
+async def refresh_existing_staff_review_cards_once():
+ """Restyle all previously posted review messages in place without touching PB records.
+
+ Keep their status, review controls and proof attachments intact. Retry any
+ transient failures on a future startup rather than marking an incomplete job done.
+ """
+ for guild in bot.guilds:
+  operation=f"staff_review_full_roster_time_only_v1_{guild.id}"
+  if await store.one("SELECT name FROM one_time_pb_migrations WHERE name=?",(operation,)):
+   continue
+  rows=await store.all(
+   "SELECT * FROM submissions WHERE guild=? AND review_channel IS NOT NULL "
+   "AND review_message IS NOT NULL ORDER BY id",(guild.id,)
+  )
+  updated=already=missing=failed=0
+  for r in rows:
+   try:
+    channel=bot.get_channel(r["review_channel"]) or await bot.fetch_channel(r["review_channel"])
+    msg=await channel.fetch_message(r["review_message"])
+    if not bot.user or msg.author.id!=bot.user.id:
+     logging.warning("Skipping review PB #%s not authored by the Novus bot",r["id"])
+     failed+=1
+     continue
+
+    expected_header=f"Submitted by {submitted_review_members(r)}"
+    old_text=old_announcement_text(msg)
+    if expected_header in old_text and "-# SUBMITTED PB" in old_text:
+     # New layout has no player mention on the Submitted PB time line.
+     submitted_section=old_text.split("-# SUBMITTED PB",1)[1].split("-# ",1)[0]
+     if submitted_review_members(r) not in submitted_section:
+      already+=1
+      continue
+
+    old_view=ui.LayoutView.from_message(msg)
+    had_file=any(isinstance(item,ui.File) for item in old_view.walk_children())
+    file_name=None
+    if had_file:
+     path=archive_path(DBPATH,r["proof"])
+     if path:
+      expected_file=proof_attachment_name(r,path)
+      if any(a.filename==expected_file for a in msg.attachments):
+       file_name=expected_file
+     if file_name is None:
+      logging.warning("Retained staff PB #%s with unknown attached proof tile",r["id"])
+      failed+=1
+      continue
+    view=await Review.make(r,archived_filename=file_name)
+    await msg.edit(view=view,allowed_mentions=discord.AllowedMentions.none())
+    updated+=1
+    await asyncio.sleep(1.4)
+   except discord.NotFound:
+    missing+=1
+   except (discord.HTTPException,aiosqlite.Error,ValueError,TypeError):
+    failed+=1
+    logging.exception("Could not refresh previous staff review for PB #%s",r["id"])
+  if failed==0:
+   async with store.lock:
+    await store.conn.execute(
+     "INSERT OR IGNORE INTO one_time_pb_migrations(name,applied) VALUES(?,?)",
+     (operation,now())
+    )
+    await store.conn.commit()
+  logging.info("Staff review roster backfill: guild=%s total=%s updated=%s already=%s "
+               "missing=%s failed=%s complete=%s",
+               guild.id,len(rows),updated,already,missing,failed,failed==0)
 
 
 async def update_review(r):
