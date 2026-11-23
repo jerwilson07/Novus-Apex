@@ -27,12 +27,10 @@ class RaidSizeTests(unittest.TestCase):
         )
 
     def test_shared_options_and_populated_leaderboards(self):
-        sizes = ["Solo", "Duo", "Trio", "4-Man", "5-Man"]
-        options = [option.value for option in bot.submission_format_options()]
-        for size in sizes:
-            self.assertEqual(options.count(size), 1)
-        self.assertFalse(any(option.startswith("Normal · ") for option in options))
+        options = [option.value for option in bot.all_raid_submission_options()]
+        self.assertEqual(len(options), len(set(options)))
         self.assertLessEqual(len(options), 25)
+        self.assertFalse(any("|||Normal · " in option for option in options))
         self.assertEqual(
             bot.RAIDS["Tombs of Amascut"],
             ["Expert · Solo", "Expert · Duo", "Expert · 8-Man"],
