@@ -583,7 +583,7 @@ class PBLayoutTests(unittest.TestCase):
         review = bot.Review(record())
         self.assertLessEqual(len(review.children[0].children), 10)
 
-    def test_royal_titans_review_team_appears_at_submitted_time_not_header(self):
+    def test_royal_titans_review_team_appears_in_submitted_by_header(self):
         submitted = record(
             id=35, guild=bot.NOVUS_GUILD_ID, category="Bosses", activity="Royal Titans",
             variant="Standard", member_ids="707,808", submitter=808,
@@ -598,15 +598,16 @@ class PBLayoutTests(unittest.TestCase):
         card = bot.Review(submitted, previous, placement=2)
         panel = card.children[0]
         header = panel.children[0].children[0].content
-        self.assertIn("Submitted by <@808>", header)
+        self.assertIn("Submitted by <@707> · <@808>", header)
         self.assertNotIn("Listed players", header)
         submitted_text = next(
             item.children[0].content for item in panel.children
             if isinstance(item, bot.ui.Section)
             and "SUBMITTED PB" in item.children[0].content
         )
-        self.assertIn("<@707> · <@808>", submitted_text)
-        self.assertIn("46.80", submitted_text)
+        self.assertNotIn("<@707>", submitted_text)
+        self.assertNotIn("<@808>", submitted_text)
+        self.assertIn("**46.80**", submitted_text)
         # The comparison is visually below the submission, not above it.
         components = panel.children
         submitted_index = next(
@@ -637,6 +638,34 @@ class PBLayoutTests(unittest.TestCase):
         self.assertTrue(bot.royal_titans_35_ready_to_refresh(
             dict(submitted, status="approved")
         ))
+
+    def test_review_header_lists_all_members_even_when_submitter_not_in_run(self):
+        # A staff reviewer should see the selected team, not only the uploader.
+        item = record(
+            category="Raids", activity="The Fractured Archive", variant="6-Man",
+            member_ids="101,202,303,404,505,606",
+            members="One, Two, Three, Four, Five, Six",
+            submitter=999, ms=860000,
+        )
+        for status in ("pending", "approved"):
+            with self.subTest(status=status):
+                review = bot.Review(dict(item, status=status))
+                panel = review.children[0]
+                header = panel.children[0].children[0].content
+                expected = " · ".join(f"<@{member}>" for member in
+                                      ("101", "202", "303", "404", "505", "606"))
+                self.assertIn(f"Submitted by {expected}", header)
+                self.assertNotIn("<@999>", header)
+                texts = [
+                    section.children[0].content if isinstance(section, bot.ui.Section)
+                    else section.content
+                    for section in panel.children
+                    if isinstance(section, (bot.ui.Section, bot.ui.TextDisplay))
+                ]
+                submitted = next(text for text in texts if "-# SUBMITTED PB" in text)
+                self.assertIn(f"**{bot.fmt(item['ms'])}**", submitted)
+                self.assertNotIn("<@101>", submitted)
+                self.assertNotIn(" · **", submitted)
 
     def test_review_submission_precedes_empty_current_record(self):
         pending = record(id=42, ms=46800, status="pending")
