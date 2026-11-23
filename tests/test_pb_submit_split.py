@@ -25,7 +25,7 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(response.send_modal.await_args.args[0],bot.BossSubmitModal)
         response.send_message.assert_not_awaited()
 
-    def test_raid_modal_has_every_raid_and_variant_with_optional_proof(self):
+    def test_raid_modal_has_every_raid_and_variant_with_required_proof(self):
         modal=bot.AllRaidSubmitModal()
         expected={(activity,variant) for activity,variants in bot.RAIDS.items()
                   for variant in variants}
@@ -35,15 +35,16 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(modal.children),4)
         self.assertFalse(hasattr(modal,"boss_select"))
         self.assertIsInstance(modal.proof_upload,bot.ui.FileUpload)
-        self.assertFalse(modal.proof_upload.required)
+        self.assertTrue(modal.proof_upload.required)
         self.assertFalse(modal.details_input.placeholder)
 
-    def test_existing_per_raid_shortcut_has_optional_proof(self):
+    def test_existing_per_raid_shortcut_has_required_proof(self):
         for activity,formats in bot.RAIDS.items():
             modal=bot.RaidSubmitModal(activity)
             self.assertEqual([option.value for option in modal.format_select.options],formats)
             self.assertEqual(len(modal.children),4)
             self.assertIsInstance(modal.proof_upload,bot.ui.FileUpload)
+            self.assertTrue(modal.proof_upload.required)
             self.assertFalse(modal.details_input.placeholder)
 
     def test_boss_modal_contains_all_dt2_variants_and_no_mode_dropdown(self):
@@ -66,7 +67,7 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(modal.children),5)
         self.assertFalse(modal.details_input.placeholder)
         self.assertIsInstance(modal.proof_upload,bot.ui.FileUpload)
-        self.assertFalse(modal.proof_upload.required)
+        self.assertTrue(modal.proof_upload.required)
 
     async def test_boss_modal_resolves_standard_dt2_nex_and_huey(self):
         i=SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
@@ -108,7 +109,7 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
                          ("Raids","Theatre of Blood","Hard Mode · Trio"))
         self.assertIs(send.await_args.args[6],modal.proof_upload)
 
-    async def test_optional_proof_included_in_submission_when_present(self):
+    async def test_required_proof_included_and_missing_upload_rejected(self):
         response=SimpleNamespace(send_message=AsyncMock())
         i=SimpleNamespace(response=response)
         details=SimpleNamespace(value="14:32.60")
@@ -127,7 +128,10 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
             submit.reset_mock()
             upload.values=[]
             await bot.submit_modal_details(i,"Bosses","Vorkath","Standard",details,members,upload)
-            self.assertEqual(submit.await_args.kwargs["proof"],"")
+            submit.assert_not_awaited()
+            response.send_message.assert_awaited_once()
+            self.assertIn("Upload a dated screenshot",response.send_message.await_args.args[0])
+            self.assertTrue(response.send_message.await_args.kwargs["ephemeral"])
 
 
 if __name__=="__main__":
