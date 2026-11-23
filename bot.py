@@ -950,7 +950,7 @@ async def show_my_pbs(i):
  )
 
 def pb_scroll_to_top_text(url):
- return f"## [↑ CLICK TO SUBMIT PB ↑]({url})"
+ return f"## [↑ BACK TO TOP • SUBMIT A PB]({url})"
 
 
 async def paced_startup_edit(message, **kwargs):
@@ -1183,8 +1183,10 @@ async def on_ready():
                   len(re.findall(r" · PB #\d+",board_text)),
                   sum(line.startswith("## ") and line.endswith(clean(activity)) for line in board_text.splitlines()))
      if activity=="The Fractured Archive":
-      logging.info("Verified TFA 5-Man card present=%s redundant_jump_link=%s",
-                   "### 5-Man" in board_text.splitlines(),"[5-Man ↓](" in board_text)
+      logging.info("Verified TFA adjacent 4/5-Man cards: 4-Man=%s 5-Man=%s redundant_jumps=%s",
+                   "### 4-Man" in board_text.splitlines(),
+                   "### 5-Man" in board_text.splitlines(),
+                   [size for size in ("4-Man","5-Man") if f"[{size} ↓](" in board_text])
     for i,total in enumerate(runner_ups):
      verified_runner_up_slots[i]+=total
     if runner_ups!=(count,count) or (count and not {2,3}.issubset(loaded)):
@@ -1956,8 +1958,9 @@ def linked_board_view(factory,activity,blocks,*,show_title=True,text_limit=PB_PU
 
 def raid_continuation_label(activity,blocks):
  label=blocks[0][0] if blocks else ""
- # The Fractured Archive's 5-Man card is directly below the other scales.
- return None if activity=="The Fractured Archive" and label=="5-Man" else label
+ # The Fractured Archive's 4-Man and 5-Man cards follow consecutively.
+ # Don't add a jump link to a card already immediately below this message.
+ return None if activity=="The Fractured Archive" and label in ("4-Man","5-Man") else label
 
 
 def raid_board_page_plan(activity,blocks):
