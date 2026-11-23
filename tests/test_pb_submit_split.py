@@ -1,4 +1,4 @@
-"""Regression checks for direct raid/boss dropdown modals."""
+"""Regression checks for direct raid/boss dropdown modals and optional proof."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -25,29 +25,35 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(response.send_modal.await_args.args[0],bot.BossSubmitModal)
         response.send_message.assert_not_awaited()
 
-    def test_raid_modal_has_every_raid_and_variant_in_one_dropdown(self):
+    def test_raid_modal_has_every_raid_and_variant_with_optional_proof(self):
         modal=bot.AllRaidSubmitModal()
         expected={(activity,variant) for activity,variants in bot.RAIDS.items()
                   for variant in variants}
         options={tuple(option.value.split("|||",1)) for option in modal.raid_select.options}
         self.assertEqual(options,expected)
         self.assertLessEqual(len(modal.raid_select.options),25)
-        self.assertEqual(len(modal.children),3)
+        self.assertEqual(len(modal.children),4)
         self.assertFalse(hasattr(modal,"boss_select"))
+        self.assertIsInstance(modal.proof_upload,bot.ui.FileUpload)
+        self.assertFalse(modal.proof_upload.required)
+        self.assertFalse(modal.details_input.placeholder)
 
-    def test_existing_per_raid_shortcut_still_limits_raid_formats(self):
+    def test_existing_per_raid_shortcut_has_optional_proof(self):
         for activity,formats in bot.RAIDS.items():
             modal=bot.RaidSubmitModal(activity)
             self.assertEqual([option.value for option in modal.format_select.options],formats)
+            self.assertEqual(len(modal.children),4)
+            self.assertIsInstance(modal.proof_upload,bot.ui.FileUpload)
+            self.assertFalse(modal.details_input.placeholder)
 
-    def test_boss_modal_covers_all_bosses_and_keeps_only_three_modes(self):
+    def test_boss_modal_contains_all_dt2_variants_and_no_mode_dropdown(self):
         modal=bot.BossSubmitModal()
         standard={option.value for option in modal.boss_select.options}
         special={option.value for option in modal.special_boss_select.options}
         regular={activity for activity,variants in bot.BOSSES.items()
                  if variants==["Standard"]}
-        dt2={activity for activity,variants in bot.BOSSES.items()
-             if set(variants)=={"Normal","Awakened"}}
+        dt2={f"{activity}|||{mode}" for activity,variants in bot.BOSSES.items()
+             if set(variants)=={"Normal","Awakened"} for mode in variants}
         team={f"{activity}|||{size}" for activity,formats in bot.TEAM_BOSS_SIZES.items()
               for size in formats}
         self.assertEqual(standard,regular)
@@ -56,42 +62,43 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Corrupted Gauntlet",standard)
         self.assertLessEqual(len(modal.boss_select.options),25)
         self.assertLessEqual(len(modal.special_boss_select.options),25)
-        self.assertEqual([opt.value for opt in modal.format_select.options],
-                         ["__none__","Normal","Awakened"])
+        self.assertFalse(hasattr(modal,"format_select"))
         self.assertEqual(len(modal.children),5)
-        self.assertEqual(modal.details_input.placeholder,"30.60 or 14:32.60")
+        self.assertFalse(modal.details_input.placeholder)
+        self.assertIsInstance(modal.proof_upload,bot.ui.FileUpload)
+        self.assertFalse(modal.proof_upload.required)
 
-    async def test_boss_modal_resolves_normal_bosses_dt2_nex_and_huey(self):
+    async def test_boss_modal_resolves_standard_dt2_nex_and_huey(self):
         i=SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
         with patch.object(bot,"submit_modal_details",new_callable=AsyncMock) as send:
-            async def check(standard,special,mode,expected):
+            async def check(standard,special,expected):
                 modal=bot.BossSubmitModal()
                 modal.boss_select._values=[standard] if standard else []
                 modal.special_boss_select._values=[special] if special else []
-                modal.format_select._values=[mode] if mode else []
                 await modal.on_submit(i)
                 self.assertEqual(send.await_args.args[1:4],expected)
+                self.assertIs(send.await_args.args[6],modal.proof_upload)
                 send.reset_mock()
 
-            await check("Vorkath",None,None,("Bosses","Vorkath","Standard"))
-            await check("Gauntlet",None,None,("Bosses","Gauntlet","Standard"))
-            await check("Corrupted Gauntlet",None,None,
+            await check("Vorkath",None,("Bosses","Vorkath","Standard"))
+            await check("Gauntlet",None,("Bosses","Gauntlet","Standard"))
+            await check("Corrupted Gauntlet",None,
                         ("Bosses","Corrupted Gauntlet","Standard"))
-            await check(None,"Vardorvis","Awakened",("Bosses","Vardorvis","Awakened"))
-            await check(None,"Nex|||Trio",None,("Bosses","Nex","Trio"))
-            await check(None,"The Hueycoatl|||5-Man",None,
+            await check(None,"Vardorvis|||Normal",("Bosses","Vardorvis","Normal"))
+            await check(None,"Vardorvis|||Awakened",("Bosses","Vardorvis","Awakened"))
+            await check(None,"Nex|||Trio",("Bosses","Nex","Trio"))
+            await check(None,"The Hueycoatl|||5-Man",
                         ("Bosses","The Hueycoatl","5-Man"))
 
             modal=bot.BossSubmitModal()
             modal.boss_select._values=["Gauntlet"]
             modal.special_boss_select._values=["Nex|||Duo"]
-            modal.format_select._values=[]
             await modal.on_submit(i)
             send.assert_not_awaited()
             i.response.send_message.assert_awaited()
             self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
 
-    async def test_all_raid_modal_preserves_exact_variant(self):
+    async def test_raid_modal_preserves_variant_and_proof_field(self):
         i=SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
         modal=bot.AllRaidSubmitModal()
         modal.raid_select._values=["Theatre of Blood|||Hard Mode · Trio"]
@@ -99,6 +106,28 @@ class SubmissionSplitTests(unittest.IsolatedAsyncioTestCase):
             await modal.on_submit(i)
         self.assertEqual(send.await_args.args[1:4],
                          ("Raids","Theatre of Blood","Hard Mode · Trio"))
+        self.assertIs(send.await_args.args[6],modal.proof_upload)
+
+    async def test_optional_proof_included_in_submission_when_present(self):
+        response=SimpleNamespace(send_message=AsyncMock())
+        i=SimpleNamespace(response=response)
+        details=SimpleNamespace(value="14:32.60")
+        members=SimpleNamespace(values=[SimpleNamespace(id=123)])
+        attachment=SimpleNamespace(
+            content_type="image/png",size=120000,
+            url="https://cdn.discordapp.com/attachments/111/222/proof.png"
+        )
+        upload=SimpleNamespace(values=[attachment])
+        with (
+            patch.object(bot,"discord_attachment_key",return_value=("111","222","proof.png")),
+            patch.object(bot,"submit",new_callable=AsyncMock) as submit
+        ):
+            await bot.submit_modal_details(i,"Bosses","Vorkath","Standard",details,members,upload)
+            self.assertEqual(submit.await_args.kwargs["proof"],attachment.url)
+            submit.reset_mock()
+            upload.values=[]
+            await bot.submit_modal_details(i,"Bosses","Vorkath","Standard",details,members,upload)
+            self.assertEqual(submit.await_args.kwargs["proof"],"")
 
 
 if __name__=="__main__":
