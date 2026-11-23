@@ -8,8 +8,8 @@ from test_pb_ui import record
 
 
 class RaidSizeTests(unittest.TestCase):
-    def test_tfa_adjacent_4_and_5_man_continuations_have_no_jump(self):
-        for size in ("4-Man", "5-Man"):
+    def test_tfa_adjacent_4_5_and_6_man_continuations_have_no_jump(self):
+        for size in ("4-Man", "5-Man", "6-Man"):
             self.assertIsNone(
                 bot.raid_continuation_label("The Fractured Archive", [(size, [])])
             )
@@ -33,7 +33,20 @@ class RaidSizeTests(unittest.TestCase):
             self.assertEqual(options.count(size), 1)
         self.assertFalse(any(option.startswith("Normal · ") for option in options))
         self.assertLessEqual(len(options), 25)
-        self.assertEqual(bot.RAIDS["Tombs of Amascut"], ["Expert · Solo", "Expert · 8-Man"])
+        self.assertEqual(
+            bot.RAIDS["Tombs of Amascut"],
+            ["Expert · Solo", "Expert · Duo", "Expert · 8-Man"],
+        )
+        self.assertEqual(bot.team_size("Raids", "Expert · Duo", "Tombs of Amascut"), 2)
+        self.assertEqual(bot.RAIDS["The Fractured Archive"][-1], "6-Man")
+        self.assertEqual(bot.team_size("Raids", "6-Man", "The Fractured Archive"), 6)
+        raid_options = [o.value for o in bot.all_raid_submission_options()]
+        self.assertEqual(len(raid_options), 24)
+        self.assertEqual(len(set(raid_options)), len(raid_options))
+        self.assertIn("Tombs of Amascut|||Expert · Duo", raid_options)
+        self.assertIn("The Fractured Archive|||6-Man", raid_options)
+        self.assertNotIn("Theatre of Blood|||6-Man", raid_options)
+        self.assertNotIn("Chambers of Xeric|||6-Man", raid_options)
         for activity in bot.SHARED_SIZE_RAIDS:
             with self.subTest(activity=activity):
                 variants = bot.RAIDS[activity]
