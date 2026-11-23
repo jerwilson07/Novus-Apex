@@ -45,6 +45,60 @@ class PBRosterTests(unittest.TestCase):
                       view_text(bot.RaidLeaderboard("Tombs of Amascut", [("Expert · 8-Man", [raid])])))
 
 
+ 
+class StaffReviewBackfillTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_review_is_edited_in_place_without_record_changes(self):
+        import asyncio
+        row = record(
+            guild=123, id=81, category="Raids", activity="The Fractured Archive",
+            variant="6-Man", members="One, Two, Three, Four, Five, Six",
+            member_ids="101,202,303,404,505,606", submitter=999,
+            review_channel=55, review_message=77, status="approved"
+        )
+        existing = SimpleNamespace(
+            author=SimpleNamespace(id=444), id=77, attachments=[],
+            edit=AsyncMock()
+        )
+        channel = SimpleNamespace(fetch_message=AsyncMock(return_value=existing))
+        fake_bot = SimpleNamespace(
+            guilds=[SimpleNamespace(id=123)],
+            user=SimpleNamespace(id=444),
+            get_channel=lambda channel_id: channel
+        )
+        fake_db = SimpleNamespace(
+            one=AsyncMock(return_value=None),
+            all=AsyncMock(return_value=[row]),
+            lock=asyncio.Lock(),
+            conn=SimpleNamespace(execute=AsyncMock(), commit=AsyncMock()),
+        )
+        old_card = "Submitted by <@999>\\n-# SUBMITTED PB\\n**<@101> · <@202>** · **14:32.60**"
+        new_card = bot.Review(row)
+        with (
+            patch.object(bot, "bot", fake_bot),
+            patch.object(bot, "store", fake_db),
+            patch.object(bot, "old_announcement_text", return_value=old_card),
+            patch.object(bot.ui.LayoutView, "from_message", return_value=SimpleNamespace(
+                walk_children=lambda: iter(())
+            )),
+            patch.object(bot.Review, "make", new_callable=AsyncMock, return_value=new_card),
+            patch.object(bot.asyncio, "sleep", new_callable=AsyncMock),
+        ):
+            await bot.refresh_existing_staff_review_cards_once()
+
+        existing.edit.assert_awaited_once()
+        view = existing.edit.await_args.kwargs["view"]
+        text = view_text(view)
+        self.assertIn("Submitted by <@101> · <@202> · <@303> · <@404> · <@505> · <@606>", text)
+        self.assertNotIn("Submitted by <@999>", text)
+        submitted = text.split("-# SUBMITTED PB", 1)[1].split("-# ", 1)[0]
+        self.assertIn("14:32.60", submitted)
+        self.assertNotIn("<@101>", submitted)
+        self.assertFalse(existing.edit.await_args.kwargs.get("attachments"))
+        fake_db.conn.execute.assert_awaited_once()
+        self.assertIn("staff_review_full_roster_time_only_v1", fake_db.conn.execute.await_args.args[1][0])
+        fake_db.conn.commit.assert_awaited_once()
+
+
 class PBRosterSubmitTests(unittest.IsolatedAsyncioTestCase):
     async def test_historical_mention_only_resolves_verified_named_submitter(self):
         ezra = record(id=35, guild=bot.NOVUS_GUILD_ID, category="Bosses",
