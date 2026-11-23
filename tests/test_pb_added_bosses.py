@@ -119,13 +119,13 @@ class AddedBossesLayoutTests(TestCase):
         self.assertEqual(bot.public_board_tail_to_reflow(roots, []), [])
 
     def test_supported_brackets_are_selectable_and_directory_has_all_four(self):
-        modal = bot.SubmitModal()
-        for select in (modal.target_select, modal.format_select, modal.boss_select):
-            self.assertLessEqual(len(select.options), 25)
-        self.assertEqual([option.label for option in modal.target_select.options], [*bot.RAIDS, "Boss PB"])
-        self.assertFalse(modal.boss_select.required)
+        modal = bot.BossSubmitModal()
+        self.assertLessEqual(len(modal.boss_select.options), 25)
+        self.assertLessEqual(len(modal.special_boss_select.options), 25)
         available = {option.value for option in modal.boss_select.options}
-        self.assertEqual(available | set(bot.GAUNTLET_FORMATS.values()), set(bot.BOSSES))
+        special = {option.value for option in modal.special_boss_select.options}
+        self.assertEqual(available | {option.split("|||")[0] for option in special}, set(bot.BOSSES))
+        self.assertTrue(modal.proof_upload.required)
         self.assertEqual(set(bot.ADDED_BOSSES), {boss for boss, _, _ in BRACKETS})
         for name in bot.ADDED_BOSSES:
             with self.subTest(boss=name):
@@ -140,9 +140,9 @@ class AddedBossesLayoutTests(TestCase):
             with self.subTest(boss=name, variant=variant):
                 self.assertEqual(bot.team_size("Bosses", variant, name), size)
                 self.assertEqual(bot.solo_boss_variant(name, variant), size == 1)
-                self.assertIn(name, available)
+                self.assertIn(name if variant == "Standard" else f"{name}|||{variant}",
+                              available if variant == "Standard" else special)
                 if size > 1:
-                    self.assertIn(variant, [o.value for o in modal.format_select.options])
                     self.assertIn(variant, bot.first_announcement_title(name, variant))
                     self.assertIn(variant, bot.recent_pb_title(name, variant))
 
@@ -179,34 +179,22 @@ class AddedBossesLayoutTests(TestCase):
 
 
 class AddedBossesIntegrationTests(IsolatedAsyncioTestCase):
-    async def test_shared_gauntlet_option_preserves_both_pb_boards(self):
-        modal = bot.SubmitModal()
-        modal.target_select._values = ["boss"]
-        modal.details_input._value = "46.80 | 11/11/2026"
+    async def test_gauntlet_options_preserve_both_pb_boards(self):
+        modal = bot.BossSubmitModal()
+        self.assertIn("Gauntlet", [o.value for o in modal.boss_select.options])
+        self.assertIn("Corrupted Gauntlet", [o.value for o in modal.boss_select.options])
         i = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
-        with patch.object(bot, "submit", new_callable=AsyncMock) as submit:
-            modal.boss_select._values = []
-            modal.format_select._values = ["__none__"]
-            await modal.on_submit(i)
-            self.assertIn("Choose which boss", i.response.send_message.await_args.args[0])
-            modal.boss_select._values = ["Gauntlet"]
-            await modal.on_submit(i)
-            self.assertIn("Regular Gauntlet", i.response.send_message.await_args.args[0])
-            submit.assert_not_awaited()
-            for selected, activity in (("Regular Gauntlet", "Gauntlet"),
-                                       ("Corrupted Gauntlet", "Corrupted Gauntlet")):
-                modal.format_select._values = [selected]
+        with patch.object(bot, "submit_modal_details", new_callable=AsyncMock) as submit:
+            for activity in ("Gauntlet", "Corrupted Gauntlet"):
+                modal.boss_select._values = [activity]
+                modal.special_boss_select._values = []
                 await modal.on_submit(i)
-                self.assertEqual(submit.await_args.args[1:4], ("Bosses", activity, "Standard"))
+                self.assertEqual(submit.await_args.args[1:4],
+                                 ("Bosses", activity, "Standard"))
 
     async def test_modal_enforces_roster_sizes_and_saves_the_exact_bracket(self):
         for name, variant, size in BRACKETS:
             with self.subTest(boss=name, variant=variant):
-                modal = bot.SubmitModal()
-                modal.target_select._values = ["boss"]
-                modal.format_select._values = [variant if size > 1 else "__none__"]
-                modal.boss_select._values = [name]
-                modal.details_input._value = "46.80 | 11/11/2026"
                 i = SimpleNamespace(guild_id=123, user=SimpleNamespace(id=999),
                                     response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
                                     followup=SimpleNamespace(send=AsyncMock()))
@@ -218,15 +206,16 @@ class AddedBossesIntegrationTests(IsolatedAsyncioTestCase):
                       patch.object(bot.Review, "make", new_callable=AsyncMock),
                       patch.object(bot, "datetime", wraps=datetime) as clock):
                     clock.now.return_value = datetime(2026, 11, 19, tzinfo=timezone.utc)
-                    modal.members_select._values = players
-                    await modal.on_submit(i)
+                    await bot.submit(i, "Bosses", name, variant, "46.80", "11/11/2026",
+                                     players, proof="https://example.com/proof.png")
                     self.assertIn(f"Expected {size}", i.response.send_message.await_args.args[0])
                     db.add.assert_not_awaited()
-                    modal.members_select._values = players[:size]
-                    await modal.on_submit(i)
+                    await bot.submit(i, "Bosses", name, variant, "46.80", "11/11/2026",
+                                     players[:size], proof="https://example.com/proof.png")
                     db.add.assert_awaited_once()
                     self.assertEqual(db.add.await_args.args[2:5], ("Bosses", name, variant))
-                    self.assertEqual(db.add.await_args.args[6], ",".join(str(p.id) for p in players[:size]))
+                    self.assertEqual(db.add.await_args.args[6],
+                                     ",".join(str(p.id) for p in players[:size]))
 
     async def test_only_missing_new_boards_are_published(self):
         tracked = [{"activity": "Inferno"}, {"activity": "Hespori"}, {"activity": "Nex"}]
