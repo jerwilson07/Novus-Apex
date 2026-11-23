@@ -125,11 +125,6 @@ class PBRosterSubmitTests(unittest.IsolatedAsyncioTestCase):
                 one = SimpleNamespace(id=111, display_name="One")
                 two = SimpleNamespace(id=222, display_name="Two")
                 three = SimpleNamespace(id=333, display_name="Three")
-                modal = bot.SubmitModal()
-                modal.target_select._values = ["boss"]
-                modal.boss_select._values = [activity]
-                modal.format_select._values = ["__none__"]
-                modal.details_input._value = "0:46.80 | 11/11/2026"
                 db = SimpleNamespace(add=AsyncMock(return_value=7), attach_review=AsyncMock(),
                                      one=AsyncMock(return_value=record()))
                 channel = SimpleNamespace(id=1, send=AsyncMock(return_value=SimpleNamespace(id=2)))
@@ -137,40 +132,30 @@ class PBRosterSubmitTests(unittest.IsolatedAsyncioTestCase):
                       patch.object(bot.Review, "make", new_callable=AsyncMock),
                       patch.object(bot, "datetime", wraps=datetime) as clock):
                     clock.now.return_value = datetime(2026, 11, 13, tzinfo=timezone.utc)
-                    modal.members_select._values = [one, two, three]
-                    await modal.on_submit(i)
-                    i.response.send_message.assert_awaited_once()
-                    self.assertIn("no more than two", i.response.send_message.await_args.args[0])
-                    db.add.assert_not_called()
-
-                    for players in ([one], [one, two]):
-                        modal.members_select._values = players
-                        await modal.on_submit(i)
-
+                    for players in ([one, two, three], [one], [one, two]):
+                        await bot.submit(i, "Bosses", activity, "Standard", "0:46.80",
+                                         "11/11/2026", players,
+                                         proof="https://example.com/proof.png")
+                    self.assertIn("no more than two",
+                                  i.response.send_message.await_args.args[0])
                     self.assertEqual(db.add.await_count, 2)
                     self.assertEqual([call.args[2:7] for call in db.add.await_args_list], [
                         ("Bosses", activity, "Standard", "One", "111"),
                         ("Bosses", activity, "Standard", "One, Two", "111,222"),
                     ])
 
-    async def test_non_dt2_default_does_not_replace_raid_formats_or_dt2_modes(self):
-        for target, boss, category, activity, variant in (
-            ("boss", "Vardorvis", "Bosses", "Vardorvis", "Awakened"),
-            ("raid|||The Fractured Archive", None, "Raids", "The Fractured Archive", "Duo"),
-        ):
-            with self.subTest(activity=activity):
-                i = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
-                modal = bot.SubmitModal()
-                modal.target_select._values = [target]
-                modal.boss_select._values = [boss] if boss else []
-                modal.details_input._value = "0:46.80 | 11/11/2026"
-                with patch.object(bot, "submit", new_callable=AsyncMock) as submit:
-                    modal.format_select._values = ["__none__"]
-                    await modal.on_submit(i)
-                    i.response.send_message.assert_awaited_once()
-                    submit.assert_not_awaited()
-
-                    modal.format_select._values = [variant]
-                    await modal.on_submit(i)
-                    submit.assert_awaited_once()
-                    self.assertEqual(submit.await_args.args[1:4], (category, activity, variant))
+    async def test_separate_modals_keep_raid_formats_and_dt2_modes(self):
+        i = SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+        boss = bot.BossSubmitModal()
+        boss.boss_select._values = []
+        boss.special_boss_select._values = ["Vardorvis|||Awakened"]
+        raid = bot.AllRaidSubmitModal()
+        raid.raid_select._values = ["The Fractured Archive|||Duo"]
+        with patch.object(bot, "submit_modal_details", new_callable=AsyncMock) as submit:
+            await boss.on_submit(i)
+            self.assertEqual(submit.await_args.args[1:4],
+                             ("Bosses", "Vardorvis", "Awakened"))
+            submit.reset_mock()
+            await raid.on_submit(i)
+            self.assertEqual(submit.await_args.args[1:4],
+                             ("Raids", "The Fractured Archive", "Duo"))
