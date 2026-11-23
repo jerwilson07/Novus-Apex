@@ -4648,20 +4648,28 @@ async def pbclear(i:discord.Interaction):
  )
 
 async def post_current_pb_board(channel,guild_id):
- """Post exactly the same public Home panel shown at the top of #pb-leaderboard.
+ """Post standalone Overall and Raids Top 10 snapshots without updating tracked panels.
 
- Reuse Home.make so banner, points layout, and action buttons remain identical.
- This is a one-message snapshot and does not alter persistent panel tracking.
+ Reuse the live Home and RaidTop10 views, posting them in the same order as
+ #pb-leaderboard: overall first, raids second.
  """
- view=await Home.make(guild_id)
- message=await channel.send(
-  **view.send_options(),
-  allowed_mentions=discord.AllowedMentions.none()
- )
- return message,1
+ mentions=discord.AllowedMentions.none()
+ overall=await Home.make(guild_id)
+ overall_msg=await channel.send(**overall.send_options(),allowed_mentions=mentions)
+ try:
+  raids=await RaidTop10.make(guild_id)
+  raid_msg=await channel.send(**raids.send_options(),allowed_mentions=mentions)
+ except Exception:
+  # Avoid leaving a half-posted pair when the second send fails.
+  try:
+   await overall_msg.delete()
+  except discord.HTTPException:
+   logging.exception("Could not remove partial /pbpost overall snapshot")
+  raise
+ return overall_msg,raid_msg
 
 
-@bot.tree.command(name="pbpost",description="Post the Novus PB banner and Top 10 panel in this channel")
+@bot.tree.command(name="pbpost",description="Post Novus Overall and Raids Top 10 PB boards in this channel")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
 async def pbpost(i:discord.Interaction):
@@ -4680,10 +4688,11 @@ async def pbpost(i:discord.Interaction):
   )
  await i.response.defer(ephemeral=True)
  try:
-  main,_=await post_current_pb_board(i.channel,i.guild_id)
+  main,raids=await post_current_pb_board(i.channel,i.guild_id)
   await i.followup.send(
-   f"Posted the Novus PB Top 10: {main.jump_url}\n"
-   "-# This is a snapshot; the main PB leaderboard remains unchanged.",
+   f"Posted **NOVUS Top 10 Overall**: {main.jump_url}\n"
+   f"Posted **NOVUS Top 10 Raids**: {raids.jump_url}\n"
+   "-# These are snapshots; the main PB leaderboard remains unchanged.",
    ephemeral=True
   )
  except (discord.Forbidden,discord.HTTPException):
