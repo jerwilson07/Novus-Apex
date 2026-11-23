@@ -11,6 +11,8 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(bot.bot.tree.get_command("checkemojis"))
         self.assertIsNotNone(bot.bot.tree.get_command("pbpost"))
         self.assertIsNotNone(bot.bot.tree.get_command("pbpanel"))
+        self.assertIsNone(bot.bot.tree.get_command("pbsubmit"))
+        self.assertIsNotNone(bot.bot.tree.get_command("pbproof"))
 
     def test_home_panel_includes_banner_top_ten_and_three_buttons(self):
         points = [
