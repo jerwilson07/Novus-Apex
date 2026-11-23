@@ -41,10 +41,10 @@ PB_DIRECTORY_DIVIDER_URL="https://raw.githubusercontent.com/jerwilson07/Novus-PB
 REGULAR_RAID_SIZES=("Solo","Duo","Trio","4-Man","5-Man")
 SHARED_SIZE_RAIDS=("The Fractured Archive","Theatre of Blood","Chambers of Xeric")
 RAIDS={
- "The Fractured Archive":[*REGULAR_RAID_SIZES],
+ "The Fractured Archive":[*REGULAR_RAID_SIZES,"6-Man"],
  "Theatre of Blood":[*REGULAR_RAID_SIZES[1:],"Hard Mode · Trio","Hard Mode · 4-Man","Hard Mode · 5-Man"],
  "Chambers of Xeric":[*(size for size in REGULAR_RAID_SIZES if size!="4-Man"),"Challenge Mode · Solo","Challenge Mode · Duo","Challenge Mode · Trio","Challenge Mode · 5-Man"],
- "Tombs of Amascut":["Expert · Solo","Expert · 8-Man"]}
+ "Tombs of Amascut":["Expert · Solo","Expert · Duo","Expert · 8-Man"]}
 RAID_LABELS={
  "The Fractured Archive":"TFA",
  "Theatre of Blood":"ToB",
@@ -1183,10 +1183,11 @@ async def on_ready():
                   len(re.findall(r" · PB #\d+",board_text)),
                   sum(line.startswith("## ") and line.endswith(clean(activity)) for line in board_text.splitlines()))
      if activity=="The Fractured Archive":
-      logging.info("Verified TFA adjacent 4/5-Man cards: 4-Man=%s 5-Man=%s redundant_jumps=%s",
+      logging.info("Verified TFA adjacent 4/5/6-Man cards: 4-Man=%s 5-Man=%s 6-Man=%s redundant_jumps=%s",
                    "### 4-Man" in board_text.splitlines(),
                    "### 5-Man" in board_text.splitlines(),
-                   [size for size in ("4-Man","5-Man") if f"[{size} ↓](" in board_text])
+                   "### 6-Man" in board_text.splitlines(),
+                   [size for size in ("4-Man","5-Man","6-Man") if f"[{size} ↓](" in board_text])
     for i,total in enumerate(runner_ups):
      verified_runner_up_slots[i]+=total
     if runner_ups!=(count,count) or (count and not {2,3}.issubset(loaded)):
@@ -1958,9 +1959,9 @@ def linked_board_view(factory,activity,blocks,*,show_title=True,text_limit=PB_PU
 
 def raid_continuation_label(activity,blocks):
  label=blocks[0][0] if blocks else ""
- # The Fractured Archive's 4-Man and 5-Man cards follow consecutively.
- # Don't add a jump link to a card already immediately below this message.
- return None if activity=="The Fractured Archive" and label in ("4-Man","5-Man") else label
+ # The Fractured Archive's 4-, 5-, and 6-Man cards follow consecutively.
+ # Don't add a redundant jump link to a card already below this message.
+ return None if activity=="The Fractured Archive" and label in ("4-Man","5-Man","6-Man") else label
 
 
 def raid_board_page_plan(activity,blocks):
