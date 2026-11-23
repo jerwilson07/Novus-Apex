@@ -8,6 +8,24 @@ from test_pb_ui import record
 
 
 class RaidSizeTests(unittest.TestCase):
+    def test_tfa_adjacent_4_and_5_man_continuations_have_no_jump(self):
+        for size in ("4-Man", "5-Man"):
+            self.assertIsNone(
+                bot.raid_continuation_label("The Fractured Archive", [(size, [])])
+            )
+        # Preserve navigation when the next page is not one of the adjacent TFA cards.
+        self.assertEqual(
+            bot.raid_continuation_label("Theatre of Blood", [("4-Man", [])]),
+            "4-Man",
+        )
+
+    def test_back_to_top_footer_is_clear_about_navigation(self):
+        url = "https://discord.com/channels/1/2/3"
+        self.assertEqual(
+            bot.pb_scroll_to_top_text(url),
+            f"## [↑ BACK TO TOP • SUBMIT A PB]({url})",
+        )
+
     def test_shared_options_and_populated_leaderboards(self):
         sizes = ["Solo", "Duo", "Trio", "4-Man", "5-Man"]
         options = [option.value for option in bot.submission_format_options()]
