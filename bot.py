@@ -1316,7 +1316,8 @@ class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
    "mode/team size, and all involved players. No date entry is needed.\n\n"
    "**4. Proof.** Your screenshot or clip must visibly show the date the PB "
    "was achieved. Only runs from November 7, 2026 onward qualify. "
-   "Use **/pbproof** after submitting if proof was not attached yet. "
+   "Proof is required in the PB submission form. "
+   "Use **/pbproof** if staff later requests a replacement. "
    "Staff verifies the date and eligibility from the proof before approval.\n\n"
    "-# **Submit below only acknowledges these rules and closes this window. "
    "It does not submit a PB.**"
@@ -4308,27 +4309,29 @@ def boss_submission_team_size_options():
          for size in ("Duo","Trio","5-Man")]
 
 
-async def submit_modal_details(i,category,activity,variant,details_input,members_select,proof_upload=None):
+async def submit_modal_details(i,category,activity,variant,details_input,members_select,proof_upload):
  parsed=parse_submission_details(details_input.value)
  if not parsed:
   return await i.response.send_message(
    "Use **SS.ss or MM:SS.ss**. The run date must be visible in your proof.",
    ephemeral=True
   )
- proof=""
- attachment=next(iter(proof_upload.values),None) if proof_upload is not None else None
- if attachment is not None:
-  if not (attachment.content_type or "").startswith(("image/","video/")):
-   return await i.response.send_message("Only image/video proof files are accepted.",ephemeral=True)
-  if attachment.size>20*1024*1024:
-   return await i.response.send_message("Proof must be 20 MiB or smaller.",ephemeral=True)
-  if not discord_attachment_key(attachment.url):
-   return await i.response.send_message(
-    "Discord did not return a valid proof attachment. Try another file.",ephemeral=True
-   )
-  proof=attachment.url
+ attachment=next(iter(proof_upload.values),None)
+ if attachment is None:
+  return await i.response.send_message(
+   "Upload a dated screenshot or video clip before submitting your PB.",
+   ephemeral=True
+  )
+ if not (attachment.content_type or "").startswith(("image/","video/")):
+  return await i.response.send_message("Only image/video proof files are accepted.",ephemeral=True)
+ if attachment.size>20*1024*1024:
+  return await i.response.send_message("Proof must be 20 MiB or smaller.",ephemeral=True)
+ if not discord_attachment_key(attachment.url):
+  return await i.response.send_message(
+   "Discord did not return a valid proof attachment. Try another file.",ephemeral=True
+  )
  pb_date,time_value=parsed
- await submit(i,category,activity,variant,time_value,pb_date,members_select.values,proof=proof)
+ await submit(i,category,activity,variant,time_value,pb_date,members_select.values,proof=attachment.url)
 
 
 def pb_time_field():
@@ -4347,8 +4350,8 @@ def pb_party_field():
 
 def pb_proof_field():
  return ui.FileUpload(
-  custom_id="pb:submit:proof",required=False,
-  min_values=0,max_values=1
+  custom_id="pb:submit:proof",required=True,
+  min_values=1,max_values=1
  )
 
 
@@ -4383,8 +4386,8 @@ class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
    component=self.members_select
   ))
   self.add_item(ui.Label(
-   text="PB proof (optional)",
-   description="Upload the dated screenshot or clip now, or attach it later.",
+   text="PB proof (required)",
+   description="Upload a screenshot or clip showing the eligible run date.",
    component=self.proof_upload
   ))
 
@@ -4438,8 +4441,8 @@ class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
    component=self.members_select
   ))
   self.add_item(ui.Label(
-   text="PB proof (optional)",
-   description="Upload the dated screenshot or clip now, or attach it later.",
+   text="PB proof (required)",
+   description="Upload a screenshot or clip showing the eligible run date.",
    component=self.proof_upload
   ))
 
@@ -4518,8 +4521,8 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
    component=self.members_select
   ))
   self.add_item(ui.Label(
-   text="PB proof (optional)",
-   description="Upload the dated screenshot or clip now, or attach it later.",
+   text="PB proof (required)",
+   description="Upload a screenshot or clip showing the eligible run date.",
    component=self.proof_upload
   ))
 
