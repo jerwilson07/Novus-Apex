@@ -27,6 +27,7 @@ class RaidSizeTests(unittest.TestCase):
         )
 
     def test_shared_options_and_populated_leaderboards(self):
+        sizes = ["Solo", "Duo", "Trio", "4-Man", "5-Man"]
         options = [option.value for option in bot.all_raid_submission_options()]
         self.assertEqual(len(options), len(set(options)))
         self.assertLessEqual(len(options), 25)
