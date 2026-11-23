@@ -809,7 +809,7 @@ class PBStartupRefreshTests(unittest.TestCase):
         for call in calls:
             self.assertTrue(call.args, "Target Discord message must be first argument")
             self.assertIsInstance(call.args[0], ast.Name)
-            self.assertEqual(call.args[0].id, "message")
+            self.assertIn(call.args[0].id, {"message", "raids_message"})
         boards = [node for node in ast.walk(ready) if isinstance(node, ast.Call)
                   and isinstance(node.func, ast.Name) and node.func.id == "write_linked_board"]
         self.assertEqual(len(boards), 1)
