@@ -93,7 +93,7 @@ class PBLayoutTests(unittest.TestCase):
         self.assertEqual(bot.parse_submission_details("30.60"), (None, "30.60"))
         self.assertEqual(bot.parse_submission_details("14:32.60"), (None, "14:32.60"))
         modal = bot.SubmitModal()
-        self.assertEqual(modal.details_input.placeholder, "30.60 or 14:32.60")
+        self.assertFalse(modal.details_input.placeholder)
         self.assertEqual(bot.parse_pb_date("11/21/2026"), bot.datetime(2026, 11, 21).date())
         self.assertIsNone(bot.parse_pb_date(""))
         self.assertTrue(bot.ApprovePBDateModal(123))
