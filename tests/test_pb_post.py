@@ -48,48 +48,88 @@ class PBPostTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertLessEqual(len(panel.children), 10)
 
-    async def test_pbpost_sends_exact_same_home_view_once_and_keeps_main_board(self):
-        message = SimpleNamespace(id=100, jump_url="https://discord.com/channels/123/456/100")
-        channel = SimpleNamespace(send=AsyncMock(return_value=message))
+    async def test_pbpost_sends_overall_then_raids_and_preserves_main_board(self):
+        overall_message = SimpleNamespace(
+            id=100,
+            jump_url="https://discord.com/channels/123/456/100",
+            delete=AsyncMock(),
+        )
+        raid_message = SimpleNamespace(
+            id=101,
+            jump_url="https://discord.com/channels/123/456/101",
+            delete=AsyncMock(),
+        )
+        channel = SimpleNamespace(send=AsyncMock(side_effect=[overall_message,raid_message]))
         points = [
-            {"rank": 1, "member_id": 123, "points": 5, "firsts": 1, "seconds": 0, "thirds": 0}
+            {"rank":1, "member_id":123, "points":5,
+             "firsts":1, "seconds":0, "thirds":0}
         ]
-        current = bot.Home(points, guild_id=123)
+        raid_points = [
+            {"rank":1, "member_id":456, "points":3,
+             "firsts":0, "seconds":1, "thirds":0}
+        ]
+        expected_home=bot.Home(points,guild_id=123)
+        expected_raid=bot.RaidTop10(raid_points,guild_id=123)
         with (
-            patch.object(bot, "calculate_pb_points", new_callable=AsyncMock, return_value=points) as calculate,
+            patch.object(bot, "calculate_pb_points", new_callable=AsyncMock, return_value=points) as overall_calc,
+            patch.object(bot, "calculate_raid_pb_points", new_callable=AsyncMock, return_value=raid_points) as raid_calc,
             patch.object(bot.store, "set_panel", new_callable=AsyncMock) as set_panel,
+            patch.object(bot.store, "set_raid_panel", new_callable=AsyncMock) as set_raid,
             patch.object(bot.store, "set_boss_board", new_callable=AsyncMock) as set_boss_board,
             patch.object(bot.store, "clear_boss_boards", new_callable=AsyncMock) as clear_boards,
         ):
-            result, count = await bot.post_current_pb_board(channel, 123)
+            main, raids = await bot.post_current_pb_board(channel, 123)
 
-        self.assertIs(result, message)
-        self.assertEqual(count, 1)
-        calculate.assert_awaited_once_with(123)
-        channel.send.assert_awaited_once()
-        kwargs = channel.send.await_args.kwargs
-        self.assertEqual(kwargs["view"].to_components(), current.to_components())
-        text = str(kwargs["view"].to_components())
-        self.assertEqual(text.count(bot.PB_TOP10_TITLE), 1)
-        self.assertNotIn("### TOP 10", text)
-        self.assertFalse(kwargs["allowed_mentions"].everyone)
-        self.assertFalse(kwargs["allowed_mentions"].users)
-        self.assertFalse(kwargs["allowed_mentions"].roles)
+        self.assertIs(main, overall_message)
+        self.assertIs(raids, raid_message)
+        overall_calc.assert_awaited_once_with(123)
+        raid_calc.assert_awaited_once_with(123)
+        self.assertEqual(channel.send.await_count,2)
+        sent_views=[call.kwargs["view"] for call in channel.send.await_args_list]
+        self.assertEqual(sent_views[0].to_components(),expected_home.to_components())
+        self.assertEqual(sent_views[1].to_components(),expected_raid.to_components())
+        self.assertEqual(str(sent_views[0].to_components()).count(bot.PB_TOP10_TITLE),1)
+        self.assertEqual(str(sent_views[1].to_components()).count(bot.PB_RAIDS_TITLE),1)
+        self.assertNotIn(bot.PB_RAIDS_TITLE,str(sent_views[0].to_components()))
+        self.assertNotIn(bot.PB_TOP10_TITLE,str(sent_views[1].to_components()))
+        for call in channel.send.await_args_list:
+            mentions=call.kwargs["allowed_mentions"]
+            self.assertFalse(mentions.everyone)
+            self.assertFalse(mentions.users)
+            self.assertFalse(mentions.roles)
         set_panel.assert_not_awaited()
+        set_raid.assert_not_awaited()
         set_boss_board.assert_not_awaited()
         clear_boards.assert_not_awaited()
 
-    async def test_failed_send_does_not_touch_existing_board(self):
-        channel = SimpleNamespace(send=AsyncMock(side_effect=RuntimeError("send failed")))
+    async def test_failed_first_send_does_not_touch_existing_board(self):
+        channel=SimpleNamespace(send=AsyncMock(side_effect=RuntimeError("send failed")))
         with (
-            patch.object(bot.Home, "make", new_callable=AsyncMock, return_value=bot.Home()),
-            patch.object(bot.store, "clear_boss_boards", new_callable=AsyncMock) as clear_boards,
+            patch.object(bot.Home,"make",new_callable=AsyncMock,return_value=bot.Home()),
+            patch.object(bot.store,"clear_boss_boards",new_callable=AsyncMock) as clear_boards,
         ):
             with self.assertRaises(RuntimeError):
-                await bot.post_current_pb_board(channel, 123)
+                await bot.post_current_pb_board(channel,123)
         channel.send.assert_awaited_once()
         clear_boards.assert_not_awaited()
 
+    async def test_failed_raids_send_removes_partial_overall_snapshot(self):
+        overall_message=SimpleNamespace(id=100,delete=AsyncMock())
+        channel=SimpleNamespace(send=AsyncMock(side_effect=[
+            overall_message,RuntimeError("raid send failed")
+        ]))
+        with (
+            patch.object(bot.Home,"make",new_callable=AsyncMock,return_value=bot.Home()),
+            patch.object(bot.RaidTop10,"make",new_callable=AsyncMock,return_value=bot.RaidTop10()),
+            patch.object(bot.store,"set_panel",new_callable=AsyncMock) as set_panel,
+            patch.object(bot.store,"set_raid_panel",new_callable=AsyncMock) as set_raid,
+        ):
+            with self.assertRaises(RuntimeError):
+                await bot.post_current_pb_board(channel,123)
+        self.assertEqual(channel.send.await_count,2)
+        overall_message.delete.assert_awaited_once_with()
+        set_panel.assert_not_awaited()
+        set_raid.assert_not_awaited()
 
 if __name__ == "__main__":
     unittest.main()
