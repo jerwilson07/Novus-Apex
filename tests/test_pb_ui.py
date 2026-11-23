@@ -30,8 +30,8 @@ class PBLayoutTests(unittest.TestCase):
         activity = "The Fractured Archive"
         variants = bot.RAIDS[activity]
         self.assertEqual(variants, ["Solo", "Duo", "Trio", "4-Man", "5-Man", "6-Man"])
-        options = bot.submission_format_options()
-        self.assertIn("6-Man", [option.value for option in options])
+        options = bot.all_raid_submission_options()
+        self.assertIn("The Fractured Archive|||6-Man", [option.value for option in options])
         self.assertLessEqual(len(options), 25)
         self.assertEqual(bot.team_size("Raids", "6-Man", activity), 6)
 
@@ -61,31 +61,24 @@ class PBLayoutTests(unittest.TestCase):
     def test_public_board_and_rules_render(self):
         self.assertTrue(bot.Home())
         self.assertTrue(bot.RulesModal())
-        self.assertTrue(bot.SubmitModal())
+        self.assertTrue(bot.AllRaidSubmitModal())
+        self.assertTrue(bot.BossSubmitModal())
 
-    def test_single_modal_submission_options(self):
-        self.assertEqual(
-            [option.label for option in bot.submission_target_options()[:4]],
-            list(bot.RAIDS),
-        )
-        self.assertEqual(bot.submission_target_options()[-1].label, "Boss PB")
-        format_options = bot.submission_format_options()
-        self.assertEqual((format_options[0].label, format_options[0].value),
-                         ("Standard boss (no mode)", "__none__"))
-        format_labels = [option.label for option in format_options]
-        self.assertFalse(any(label.startswith(("Boss Solo", "Boss Duo")) for label in format_labels))
-        self.assertIn("Solo", format_labels)
-        self.assertIn("Hard Mode · Trio", format_labels)
-        self.assertIn("Expert · 8-Man", format_labels)
-        self.assertIn("Normal", format_labels)
-        self.assertIn("Awakened", format_labels)
-        standard_bosses = [option.label for option in bot.standard_boss_submission_options()]
-        special_bosses = [option.label for option in bot.special_boss_submission_options()]
+    def test_active_submission_options(self):
+        raid_options = bot.all_raid_submission_options()
+        self.assertLessEqual(len(raid_options), 25)
+        self.assertIn("The Fractured Archive|||6-Man", [o.value for o in raid_options])
+        self.assertIn("Theatre of Blood|||Hard Mode · Trio", [o.value for o in raid_options])
+        self.assertIn("Tombs of Amascut|||Expert · 8-Man", [o.value for o in raid_options])
+        standard_bosses = [option.value for option in bot.standard_boss_submission_options()]
+        special_bosses = [option.value for option in bot.special_boss_submission_options()]
         self.assertIn("Inferno", standard_bosses)
         self.assertIn("Gauntlet", standard_bosses)
         self.assertIn("Corrupted Gauntlet", standard_bosses)
-        self.assertIn("Vardorvis", special_bosses)
-        self.assertTrue(bot.SubmitModal())
+        self.assertIn("Vardorvis|||Normal", special_bosses)
+        self.assertIn("Vardorvis|||Awakened", special_bosses)
+        self.assertTrue(bot.AllRaidSubmitModal().proof_upload.required)
+        self.assertTrue(bot.BossSubmitModal().proof_upload.required)
 
     def test_pb_time_then_date_format(self):
         self.assertEqual(
@@ -96,7 +89,7 @@ class PBLayoutTests(unittest.TestCase):
     def test_time_only_submission_uses_date_from_proof(self):
         self.assertEqual(bot.parse_submission_details("30.60"), (None, "30.60"))
         self.assertEqual(bot.parse_submission_details("14:32.60"), (None, "14:32.60"))
-        modal = bot.SubmitModal()
+        modal = bot.AllRaidSubmitModal()
         self.assertFalse(modal.details_input.placeholder)
         self.assertEqual(bot.parse_pb_date("11/21/2026"), bot.datetime(2026, 11, 21).date())
         self.assertIsNone(bot.parse_pb_date(""))
