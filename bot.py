@@ -909,7 +909,7 @@ class PersonalPBProfile(PBLayoutView):
   panel.add_item(ui.Separator())
   if not summary["approved_count"]:
    panel.add_item(ui.TextDisplay(
-    "-# No approved PBs yet. Submit your first record with /pbsubmit."
+    "-# No approved PBs yet. Use the Submit Raid PB or Submit Boss PB button on the leaderboard."
    ))
   else:
    panel.add_item(ui.TextDisplay(
@@ -4434,27 +4434,6 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
   await submit_modal_details(i,"Bosses",activity,variant,self.details_input,self.members_select)
 
 
-class SubmissionTypePicker(PBLayoutView):
- """Entry point for /pbsubmit: same two choices as the public home buttons."""
- def __init__(self):
-  super().__init__(timeout=180)
-  container=ui.Container(accent_colour=GOLD)
-  container.add_item(ui.TextDisplay("## ✦ SUBMIT A PB\nSelect the type of personal best."))
-  row=ui.ActionRow()
-  raid=ui.Button(label="Submit Raid PB",style=discord.ButtonStyle.success)
-  boss=ui.Button(label="Submit Boss PB",style=discord.ButtonStyle.success)
-  async def open_raid(i):
-   await i.response.send_modal(AllRaidSubmitModal())
-  async def open_boss(i):
-   await i.response.send_modal(BossSubmitModal())
-  raid.callback=open_raid
-  boss.callback=open_boss
-  row.add_item(raid)
-  row.add_item(boss)
-  container.add_item(row)
-  self.add_item(container)
-
-
 class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
  def __init__(self):
   super().__init__(timeout=300)
@@ -4582,11 +4561,6 @@ class SubmitModal(LoggedModal,title="NOVUS | PB Submission"):
    self.members_select.values,
   )
 
-
-@bot.tree.command(name="pbsubmit",description="Submit an eligible Novus PB for staff review")
-@app_commands.guild_only()
-async def pbsubmit(i:discord.Interaction):
- await i.response.send_message(view=SubmissionTypePicker(),ephemeral=True)
 
 @bot.tree.command(name="mypbs",description="View your Novus PB points, placements and approved records")
 @app_commands.guild_only()
