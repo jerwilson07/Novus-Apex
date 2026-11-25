@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone
 
 import discord
 from discord import app_commands, ui
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 GUILD = 1532817291048124466
 CATEGORY = 1560643971623944203
@@ -113,14 +113,15 @@ class DiaryView(ui.View):
         self.add_item(self.refresh)
         if not ticket:
             self.add_item(ui.Button(label="Open PvM Diary Ticket",style=discord.ButtonStyle.link,url=PANEL,row=1))
-        fallback={name:row for name,row in best.items() if not cog.proof_link(row)}
+        # The proof picker is a durable fallback, even if a signed link expires.
+        fallback=best
         if fallback:
             self.proof=ui.Select(placeholder="View original Apex proof",custom_id=f"diary:proof:{member_id}:{tier}",row=2,
                 options=[discord.SelectOption(label=name,value=str(record["id"])) for name,record in fallback.items()])
             self.proof.callback=self.view_proof
             self.add_item(self.proof)
     async def interaction_check(self,i):
-        if i.guild_id==GUILD and (i.user.id==self.member_id or staff(i.user)):
+        if i.guild_id==GUILD and ((i.user.id==self.member_id and member_role(i.user)) or staff(i.user)):
             if self.ticket and not await self.cog.ticket_applicant(i.channel)==self.member_id:
                 await i.response.send_message("Ticket ownership could not be confirmed.",ephemeral=True)
                 return False
@@ -133,14 +134,21 @@ class DiaryView(ui.View):
         await self.update(i,self.tier)
     async def update(self,i,tier):
         await i.response.defer()
-        best=await self.cog.best(self.member_id)
-        embed=self.cog.embed(i.guild,self.member_id,best,tier)
-        await i.edit_original_response(embed=embed,view=DiaryView(self.cog,self.member_id,best,tier,ticket=self.ticket),allowed_mentions=discord.AllowedMentions.none())
         if self.ticket and i.message:
-            await self.cog.save_ticket(i.channel_id,self.member_id,i.message.id,tier)
+            async with self.cog.locks.setdefault(i.channel_id,asyncio.Lock()):
+                if await self.cog.ticket_applicant(i.channel)!=self.member_id:
+                    return await i.followup.send("Ticket ownership could not be confirmed.",ephemeral=True)
+                best=await self.cog.best(self.member_id)
+                if await self.cog.ticket_applicant(i.channel)!=self.member_id:
+                    return await i.followup.send("Ticket ownership could not be confirmed.",ephemeral=True)
+                await i.edit_original_response(embed=self.cog.embed(i.guild,self.member_id,best,tier),view=DiaryView(self.cog,self.member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
+                await self.cog.save_ticket(i.channel_id,self.member_id,i.message.id,tier)
+        else:
+            best=await self.cog.best(self.member_id)
+            await i.edit_original_response(embed=self.cog.embed(i.guild,self.member_id,best,tier),view=DiaryView(self.cog,self.member_id,best,tier),allowed_mentions=discord.AllowedMentions.none())
     async def view_proof(self,i):
         sid=int(self.proof.values[0])
-        best=await self.cog.best(self.member_id)
+        best=await self.cog.best(self.member_id,resolve_links=False)
         if not any(row["id"]==sid for row in best.values()):
             return await i.response.send_message("That record changed. Refresh the diary.",ephemeral=True)
         await self.cog.show_proof(i,sid)
@@ -161,6 +169,9 @@ class DiaryCog(commands.Cog):
         self.locks={}
         self.started=None
         self.recovered=False
+
+    def cog_unload(self):
+        self.refresh_ticket_cards.cancel()
 
     async def initialize(self):
         async with self.store.lock:
@@ -194,6 +205,7 @@ class DiaryCog(commands.Cog):
         counts,done,total=progress(best,tier)
         e.add_field(name=f"{rank_emoji(guild,tier)}{RANKS[tier]} requirements",value=" • ".join(f"{label} {min(counts[g],n)}/{n}" for label,g,n in zip(GROUP_LABELS,GROUPS,RULES[tier])),inline=False)
         grouped={group:[] for group in GROUPS}
+        link_budget=3500
         for name,group,cat,act,var,size,times in CHALLENGES:
             row=best.get(name)
             if not row:
@@ -203,8 +215,10 @@ class DiaryCog(commands.Cog):
                 link=self.proof_link(row)
                 evidence=link if link else f"Proof #{row['id']}"
                 # Embed fields are limited to 1024 characters, including URL text.
-                if len(evidence)>750:
-                    evidence=f"Proof #{row['id']} (use /pbviewproof)"
+                if len(evidence)>min(750,link_budget):
+                    evidence=f"Proof #{row['id']} (use proof picker)"
+                else:
+                    link_budget-=len(evidence)
                 grouped[group].append(f"{mark} {name} · **{self.fmt(row['ms'])}** / {times[tier]} · {evidence}")
         for group,label in zip(GROUPS,GROUP_LABELS):
             batch=[]
@@ -319,7 +333,36 @@ class DiaryCog(commands.Cog):
                     await self.publish(ch)
                 except Exception:
                     logger.exception("Diary ticket recovery failed")
+        self.refresh_ticket_cards.start()
         logger.info("Novus Apex diary preview ready; WOM verification and role awards disabled")
+
+    @tasks.loop(hours=2)
+    async def refresh_ticket_cards(self):
+        # Re-render only saved private tickets. Never create a new message here.
+        guild=self.bot.get_guild(GUILD)
+        if not guild:
+            return
+        for row in await self.store.all("SELECT * FROM diary_ticket_previews"):
+            ch=guild.get_channel(row["channel"])
+            if ch is None:
+                continue
+            try:
+                async with self.locks.setdefault(ch.id,asyncio.Lock()):
+                    current=await self.store.one("SELECT * FROM diary_ticket_previews WHERE channel=?",(ch.id,))
+                    if not current or await self.ticket_applicant(ch)!=current["member"]:
+                        continue
+                    msg=await ch.fetch_message(current["message"])
+                    if msg.author.id!=self.bot.user.id or not any(e.footer.text==f"Novus Apex • Diary preview • {current['member']}" for e in msg.embeds):
+                        continue
+                    best=await self.best(current["member"])
+                    if await self.ticket_applicant(ch)!=current["member"]:
+                        continue
+                    await msg.edit(embed=self.embed(guild,current["member"],best,current["tier"]),view=DiaryView(self,current["member"],best,current["tier"],ticket=True),allowed_mentions=discord.AllowedMentions.none())
+                await asyncio.sleep(1)
+            except discord.NotFound:
+                continue
+            except Exception:
+                logger.exception("Diary ticket card refresh failed channel=%s",row["channel"])
 
 async def install(bot,store,fmt,show_proof,proof_link,refresh_proofs):
     cog=DiaryCog(bot,store,fmt,show_proof,proof_link,refresh_proofs)
