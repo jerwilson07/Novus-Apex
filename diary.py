@@ -512,7 +512,7 @@ class DiaryCog(commands.Cog):
             if not rank_ready(best,tier):
                 checks.append("-# Grant confirms flagged evidence, including ToA 300 and historical team membership.")
         e.add_field(name="Diary Status",value="\n".join(checks),inline=False)
-        e.set_footer(text="Novus Apex • Diary Preview")
+        e.set_footer(text="Novus Apex • PvM Diary")
         return e
 
     @app_commands.command(name="diary",description="View your Novus Apex PvM Diary progress")
@@ -564,7 +564,7 @@ class DiaryCog(commands.Cog):
             return False
         return any(
             e.footer.text==f"Novus Apex • Diary preview • {member}"
-            or (e.footer.text=="Novus Apex • Diary Preview" and (e.description or "").split("\n",1)[0]==f"**Applicant:** <@{member}>")
+            or (e.footer.text in ("Novus Apex • Diary Preview","Novus Apex • PvM Diary") and (e.description or "").split("\n",1)[0]==f"**Applicant:** <@{member}>")
             for e in msg.embeds
         )
 
@@ -588,7 +588,7 @@ class DiaryCog(commands.Cog):
                 return
             msg=await ch.send(embed=self.embed(ch.guild,member,best,0,ticket=True),view=DiaryView(self,member,best,ticket=True),allowed_mentions=discord.AllowedMentions.none())
             await self.save_ticket(ch.id,member,msg.id,0)
-            logger.info("Diary preview posted ticket=%s message=%s",ch.id,msg.id)
+            logger.info("Diary application posted ticket=%s message=%s",ch.id,msg.id)
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self,ch):
