@@ -19,6 +19,8 @@ GUILD = 1532817291048124466
 SYNC = 1544463223535833148
 BRIDGE_PARENT = 1532825723511767246
 BRIDGE_THREAD = "Apex verification • internal"
+BRIDGE_THREAD_ID = 1575209143214542969
+COUNCIL_ROLES = {1532829195657285843,1532830356875513906}
 BRIDGE_MARKER = "Novus Sync • Apex membership verification v1"
 BRIDGE_FILENAME = "apex-membership.json"
 CATEGORY = 1560643971623944203
@@ -298,25 +300,34 @@ class DiaryCog(commands.Cog):
             try:
                 parent=guild.get_channel(BRIDGE_PARENT) or await self.bot.fetch_channel(BRIDGE_PARENT)
                 if not isinstance(parent,discord.TextChannel) or parent.permissions_for(guild.default_role).view_channel:
+                    logger.warning("Diary WOM bridge: council privacy unavailable")
                     return None
-                threads=[t for t in await guild.active_threads() if t.parent_id==BRIDGE_PARENT and t.name==BRIDGE_THREAD and t.is_private() and t.owner_id==SYNC]
-                if not threads:
-                    async for t in parent.archived_threads(private=True,joined=True,limit=100):
-                        if t.name==BRIDGE_THREAD and t.owner_id==SYNC:
-                            threads.append(t)
-                if len(threads)!=1:
+                if any(r.id not in COUNCIL_ROLES and not r.is_bot_managed() and not r.permissions.administrator and parent.permissions_for(r).view_channel for r in guild.roles):
+                    logger.warning("Diary WOM bridge: unexpected council channel visibility")
                     return None
-                async for msg in threads[0].history(limit=20):
-                    if msg.author.id!=SYNC or msg.content!=BRIDGE_MARKER:
+                # Fetch the established private bridge directly rather than depend
+                # on the gateway's active-thread cache or list visibility.
+                thread=await self.bot.fetch_channel(BRIDGE_THREAD_ID)
+                if not isinstance(thread,discord.Thread) or thread.guild.id!=GUILD or thread.parent_id!=BRIDGE_PARENT or not thread.is_private() or thread.owner_id!=SYNC:
+                    logger.warning("Diary WOM bridge: unexpected thread identity")
+                    return None
+                async for msg in thread.history(limit=20):
+                    if msg.author.id!=SYNC:
                         continue
-                    file=next((a for a in msg.attachments if a.filename==BRIDGE_FILENAME and a.size<1000000),None)
+                    expected=f"<@{self.bot.user.id}> {BRIDGE_MARKER}"
+                    if msg.content not in (BRIDGE_MARKER,expected):
+                        logger.warning("Diary WOM bridge: snapshot message not readable or marker mismatch")
+                        continue
+                    file=next((a for a in msg.attachments if a.filename==BRIDGE_FILENAME and 0<a.size<1000000),None)
                     if not file:
+                        logger.warning("Diary WOM bridge: snapshot attachment unavailable")
                         return None
                     data=json.loads(await file.read())
                     generated=datetime.fromisoformat(data["generated"])
                     age=(datetime.now(timezone.utc)-generated).total_seconds()
                     members=data["members"]
                     if data["version"]!=1 or data["guild"]!=GUILD or not isinstance(members,dict) or not 0<=age<1800:
+                        logger.warning("Diary WOM bridge: stale or invalid snapshot")
                         return None
                     for key,value in members.items():
                         if not key.isdigit() or not isinstance(value,dict):
@@ -329,8 +340,9 @@ class DiaryCog(commands.Cog):
                         logger.info("Diary WOM verification loaded members=%s",len(members))
                         self.bridge_logged=True
                     return members
-            except (discord.HTTPException,ValueError,TypeError,KeyError,AttributeError):
-                logger.warning("Diary WOM verification snapshot unavailable")
+                logger.warning("Diary WOM bridge: no trusted snapshot found")
+            except (discord.HTTPException,ValueError,TypeError,KeyError,AttributeError) as exc:
+                logger.warning("Diary WOM bridge: read failed (%s, status=%s)",type(exc).__name__,getattr(exc,"status",None))
             return None
 
     async def best(self,member_id,*,resolve_links=True):
@@ -609,6 +621,7 @@ class DiaryCog(commands.Cog):
                     await self.publish(ch)
                 except Exception:
                     logger.exception("Diary ticket recovery failed")
+        await self.membership_snapshot()
         self.refresh_ticket_cards.start()
         logger.info("Novus Apex diary ready; WOM bridge and staff review controls enabled")
 
