@@ -238,7 +238,10 @@ class DiaryCog(commands.Cog):
             if batch:
                 e.add_field(name=label,value="\n".join(batch),inline=False)
         time_status="✅ **Time goals met**" if done==total else f"▫️ **Time goals:** {done}/{total}"
-        e.add_field(name="Diary Status",value=f"{time_status}\nWOM join date, team membership & 3-month tenure: pending\nToA invocation: staff confirmation\nStaff approval pending",inline=False)
+        checks=[time_status,"WOM eligibility check: not connected yet"]
+        if "ToA 300 Solo" in best:
+            checks.append("ToA invocation: staff confirmation")
+        e.add_field(name="Diary Status",value="\n".join(checks),inline=False)
         e.set_footer(text="Novus Apex • Diary Preview")
         return e
 
