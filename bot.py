@@ -8,7 +8,7 @@ import aiohttp, discord, aiosqlite
 from discord import app_commands, ui
 from discord.ext import commands
 from dotenv import load_dotenv
-from novus_logging import check, notice, bind_novus_ui
+from novus_logging import check, notice, bind_novus_ui, start_check_migration
 from novus_logging import (LoggedCommandTree, LoggedModal, LoggedView, configure_logging,
                            report_interaction_error, start_logged_task)
 from proof_archive import (
@@ -990,6 +990,7 @@ async def on_ready():
  if getattr(bot, "_startup_panels_refreshed", False):return
  bot._startup_panels_refreshed=True
  logging.info("Novus Apex ready as %s (%s)",bot.user,bot.user.id)
+ start_check_migration(bot)
  logging.info("PB direct modals: raid_formats=%s standard_bosses=%s special_bosses=%s",
               len(all_raid_submission_options()),len(standard_boss_submission_options()),
               len(special_boss_submission_options()))
