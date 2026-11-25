@@ -984,7 +984,7 @@ async def on_ready():
  # Refresh persisted views only once per process, not after every reconnect.
  if getattr(bot, "_startup_panels_refreshed", False):return
  bot._startup_panels_refreshed=True
- logging.info("Novus PB bot ready as %s (%s)",bot.user,bot.user.id)
+ logging.info("Novus Apex ready as %s (%s)",bot.user,bot.user.id)
  logging.info("PB direct modals: raid_formats=%s standard_bosses=%s special_bosses=%s",
               len(all_raid_submission_options()),len(standard_boss_submission_options()),
               len(special_boss_submission_options()))
@@ -1005,12 +1005,20 @@ async def on_ready():
  for guild in bot.guilds:
   cached=await fetch_activity_emojis(guild)
   if guild.id==NOVUS_GUILD_ID:
+   # Rename only Apex's own legacy integration role; never modify permissions.
+   legacy_roles=[role for role in guild.roles if role.name=="Novus PBs" and role.tags and role.tags.bot_id==bot.user.id]
+   for role in legacy_roles:
+    try:
+     await role.edit(name="Novus Apex",reason="Novus Apex branding refresh")
+     logging.info("Novus Apex integration role renamed: %s",role.id)
+    except discord.HTTPException as exc:
+     logging.warning("Novus Apex integration role rename unavailable (status=%s); administrator rename may be required",exc.status)
    matched=[n for n in NOVUS_PB_TROPHY_IDS if cached.get(PB_PODIUM_NAMES[n])==podium_icon(n,guild.id)]
-   logging.info("Pinned Novus PB trophy IDs: %s; matched server emoji ranks=%s",NOVUS_PB_TROPHY_IDS,matched)
+   logging.info("Pinned Novus Apex trophy IDs: %s; matched server emoji ranks=%s",NOVUS_PB_TROPHY_IDS,matched)
    if len(matched)!=len(NOVUS_PB_TROPHY_IDS):
-    logging.warning("Could not match all pinned Novus PB trophy IDs in the fetched guild emojis")
+    logging.warning("Could not match all pinned Novus Apex trophy IDs in the fetched guild emojis")
   loaded=[n for n in range(1,4) if podium_icon(n,guild.id)!=PB_PODIUM_FALLBACK[n]]
-  logging.info("Resolved Novus PB podium emojis for guild %s: %s",guild.id,loaded)
+  logging.info("Resolved Novus Apex podium emojis for guild %s: %s",guild.id,loaded)
   if 1 in loaded and (guild.id==NOVUS_GUILD_ID or guild.id==GUILD_ID):
    start_logged_task(refresh_public_post_trophy_icons(guild.id),name="pb-public-post-trophies")
   await resolve_royal_titans_35_partner(guild)
@@ -2456,7 +2464,7 @@ async def repair_public_board_order(g):
    channel=bot.get_channel(ch) or await bot.fetch_channel(ch)
    directory_msg=await channel.fetch_message(directory["message"])
    if directory_msg.author.id!=bot.user.id:
-    logging.warning("Skipped PB reordering because the directory isn't owned by Novus PB")
+    logging.warning("Skipped PB reordering because the directory isn't owned by Novus Apex")
     return
    if tail:
     logging.info("Putting PB boards and continuation pages in directory order starting at %s",tail[0])
@@ -4086,11 +4094,11 @@ async def decide(i,sid,choice,verified_date=None):
   try:
    await announce_first_place(updated,previous_leader)
   except Exception:
-   logging.exception("Unexpected failure announcing Novus PB #%s",sid)
+   logging.exception("Unexpected failure announcing Novus Apex submission #%s",sid)
  if choice=="request":
   try:
    user=await bot.fetch_user(r["submitter"])
-   await user.send(f"Your Novus PB #{sid} needs proof. Use /pbproof with submission_id {sid} in the Novus server.")
+   await user.send(f"Your Novus Apex submission #{sid} needs proof. Use /pbproof with submission_id {sid} in the Novus server.")
   except discord.HTTPException:logging.warning("Unable to DM submission owner")
 
 class ApprovePBDateModal(LoggedModal,title="NOVUS | Verify PB Date"):
@@ -4484,7 +4492,7 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
                              self.details_input,self.members_select,self.proof_upload)
 
 
-@bot.tree.command(name="mypbs",description="View your Novus PB points, placements and approved records")
+@bot.tree.command(name="mypbs",description="View your Novus Apex points, placements and approved PBs")
 @app_commands.guild_only()
 async def mypbs(i:discord.Interaction):
  await show_my_pbs(i)
@@ -4508,7 +4516,7 @@ async def pbproof(i:discord.Interaction,submission_id:int,url:str="",attachment:
   return await i.response.send_message("Discord did not return a valid proof attachment URL.",ephemeral=True)
  await save_interaction_proof(i,r,proof)
 
-@bot.tree.command(name="pbclear",description="Clear all Novus PB submissions and leaderboard records")
+@bot.tree.command(name="pbclear",description="Clear all Novus Apex PB submissions and leaderboard records")
 @app_commands.guild_only()
 async def pbclear(i:discord.Interaction):
  if not is_council_or_founder(i):
@@ -4565,7 +4573,7 @@ async def post_current_pb_board(channel,guild_id):
  return overall_msg,raid_msg
 
 
-@bot.tree.command(name="pbpost",description="Post Novus Overall and Raids Top 10 PB boards in this channel")
+@bot.tree.command(name="pbpost",description="Post Novus Apex Overall and Raids Top 10 leaderboards here")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
 async def pbpost(i:discord.Interaction):
@@ -4579,7 +4587,7 @@ async def pbpost(i:discord.Interaction):
  perms=i.channel.permissions_for(me) if me else None
  if not perms or not perms.view_channel or not perms.send_messages or not perms.embed_links:
   return await i.response.send_message(
-   "Novus PB needs View Channel, Send Messages, and Embed Links here.",
+   "Novus Apex needs View Channel, Send Messages, and Embed Links here.",
    ephemeral=True
   )
  await i.response.defer(ephemeral=True)
@@ -4594,13 +4602,13 @@ async def pbpost(i:discord.Interaction):
  except (discord.Forbidden,discord.HTTPException):
   logging.exception("Could not post PB board copy in channel %s",i.channel_id)
   await i.followup.send(
-   "Discord could not post the PB board here. Check Novus PB permissions and try again.",
+   "Discord could not post the PB board here. Check Novus Apex permissions and try again.",
    ephemeral=True
   )
  except Exception:
   logging.exception("PB board copy failed in channel %s",i.channel_id)
   await i.followup.send(
-   "Could not post the PB board copy. Check the PB bot logs.",
+   "Could not post the PB board copy. Check the Novus Apex logs.",
    ephemeral=True
   )
 
@@ -4708,11 +4716,11 @@ async def pbpanel(i:discord.Interaction):
   )
  try:
   await rebuild_public_pb_panel(i.channel,i.guild_id)
-  await i.followup.send("Refreshed the Novus PB board with overall and raids Top 10 posts, directories, and PB leaderboards.",ephemeral=True)
+  await i.followup.send("Refreshed Novus Apex with overall and raids Top 10 posts, directories, and PB leaderboards.",ephemeral=True)
  except discord.Forbidden:
   logging.exception("PB panel send forbidden in channel %s",i.channel_id)
   await i.followup.send(
-   "Discord blocked the PB board post. Check Novus PB permissions, then run /pbpanel again.",
+   "Discord blocked the PB board post. Check Novus Apex permissions, then run /pbpanel again.",
    ephemeral=True
   )
  except Exception as exc:
@@ -4723,7 +4731,7 @@ async def pbpanel(i:discord.Interaction):
   )
 
 if __name__=="__main__":
- configure_logging("Novus PB Board")
+ configure_logging("Novus Apex")
  if not TOKEN:raise RuntimeError("DISCORD_TOKEN environment variable is required")
  if not REVIEW_ID:raise RuntimeError("REVIEW_CHANNEL_ID environment variable is required")
  bot.run(TOKEN,log_handler=None)
