@@ -1,4 +1,4 @@
-# Novus PB Board
+# Novus Apex
 
 A standalone Discord Components V2 leaderboard bot, independent from Novus Role Sync, Novus Raider, and MEE6. The separate `index.html` remains a visual demo and is not connected to production Discord records.
 
@@ -29,8 +29,8 @@ Default Unicode symbols appear if these are not configured. The bot must have ac
 
 ## Railway setup
 
-1. Create a distinct Discord application and bot named Novus PB. Invite it using the `bot` and `applications.commands` scopes. Grant View Channel, Send Messages, Read Message History, Embed Links and Use Application Commands.
-2. Create the read-only `#pb-leaderboard` channel and a private `#pb-staff-review` channel accessible to the PB bot and staff.
+1. Create a distinct Discord application and bot named Novus Apex. Invite it using the `bot` and `applications.commands` scopes. Grant View Channel, Send Messages, Read Message History, Embed Links and Use Application Commands.
+2. Create the read-only `#pb-leaderboard` channel and a private `#pb-staff-review` channel accessible to Novus Apex and staff.
 3. Create a Railway service for this repo, start command `python bot.py`. Set `DISCORD_TOKEN`, `GUILD_ID`, and `REVIEW_CHANNEL_ID`. Add `STAFF_ROLE_IDS` if needed (Manage Server permissions also qualify).
 4. **Mount a persistent Railway volume at /data** and set `DATABASE_PATH=/data/novus_pb.sqlite3`; otherwise records may be lost on redeployment.
 5. Run `/pbpanel` in `#pb-leaderboard`, then pin the message. Existing panels automatically refresh on restart.
