@@ -103,7 +103,7 @@ class DiaryView(ui.View):
         self.cog,self.member_id,self.ticket=cog,member_id,ticket
         self.tier=tier
         self.tier_select=ui.Select(
-            placeholder="Select diary rank",custom_id=f"diary:tier:{member_id}",
+            placeholder="Select Rank",custom_id=f"diary:tier:{member_id}",
             options=[discord.SelectOption(label=rank,value=str(i),default=i==tier) for i,rank in enumerate(RANKS)],
             row=0)
         self.tier_select.callback=self.select_tier
@@ -112,11 +112,11 @@ class DiaryView(ui.View):
         self.refresh.callback=self.refresh_diary
         self.add_item(self.refresh)
         if not ticket:
-            self.add_item(ui.Button(label="Open PvM Diary Ticket",style=discord.ButtonStyle.link,url=PANEL,row=1))
+            self.add_item(ui.Button(label="Open Review Ticket",style=discord.ButtonStyle.link,url=PANEL,row=1))
         # The proof picker is a durable fallback, even if a signed link expires.
         fallback=best
         if fallback:
-            self.proof=ui.Select(placeholder="View original Apex proof",custom_id=f"diary:proof:{member_id}:{tier}",row=2,
+            self.proof=ui.Select(placeholder="View Proof",custom_id=f"diary:proof:{member_id}:{tier}",row=2,
                 options=[discord.SelectOption(label=name,value=str(record["id"])) for name,record in fallback.items()])
             self.proof.callback=self.view_proof
             self.add_item(self.proof)
@@ -193,34 +193,42 @@ class DiaryCog(commands.Cog):
         return best
 
     def embed(self,guild,member_id,best,tier):
-        title="Novus Apex | PvM Diary"
-        e=discord.Embed(title=title,color=COLORS[tier],description=f"<@{member_id}> · **Preview**\nApproved Apex times only. WOM dates and team membership not yet independently verified.")
+        counts,done,total=progress(best,tier)
+        e=discord.Embed(
+            title="Novus PvM Diary",
+            description=f"**Applicant:** <@{member_id}>\n**Selected Rank:** {rank_emoji(guild,tier)}{RANKS[tier]}",
+            color=COLORS[tier],
+        )
         if guild.icon:
             e.set_thumbnail(url=guild.icon.url)
         summary=[]
         for i,name in enumerate(RANKS):
-            _,done,total=progress(best,i)
-            summary.append(f"{rank_emoji(guild,i)}**{name}** · {done}/{total} time goals")
-        e.add_field(name="Progress overview",value="\n".join(summary),inline=False)
-        counts,done,total=progress(best,tier)
-        e.add_field(name=f"{rank_emoji(guild,tier)}{RANKS[tier]} requirements",value=" • ".join(f"{label} {min(counts[g],n)}/{n}" for label,g,n in zip(GROUP_LABELS,GROUPS,RULES[tier])),inline=False)
+            _,n,required=progress(best,i)
+            summary.append(f"{rank_emoji(guild,i)}**{name}:** {n}/{required}")
+        e.add_field(name="Rank Progress",value="\n".join(summary),inline=False)
+        status=[]
+        for label,g,cap in zip(GROUP_LABELS,GROUPS,RULES[tier]):
+            n=min(counts[g],cap)
+            status.append(f"{'✅' if n==cap else '▫️'} {label} **{n}/{cap}**")
+        e.add_field(name="Required Challenges",value=" • ".join(status[:2])+"\n"+" • ".join(status[2:]),inline=False)
         grouped={group:[] for group in GROUPS}
         link_budget=3500
         for name,group,cat,act,var,size,times in CHALLENGES:
             row=best.get(name)
+            label=name.removeprefix("ToB ").removeprefix("CM ") if group in ("tob","cm") else name
             if not row:
-                grouped[group].append(f"▫️ {name} · — / {times[tier]}")
+                line=f"▫️ {label} · — / {times[tier]}"
             else:
-                mark="✅" if row["ms"]<=threshold(times[tier]) else "▫️"
-                link=self.proof_link(row)
-                evidence=link if link else f"Proof #{row['id']}"
-                # Embed fields are limited to 1024 characters, including URL text.
+                mark="✅" if row["ms"]<=threshold(times[tier]) else "❌"
+                actual=self.fmt(row["ms"]).removesuffix(".00")
+                evidence=self.proof_link(row) or f"Proof #{row['id']}"
                 if len(evidence)>min(750,link_budget):
-                    evidence=f"Proof #{row['id']} (use proof picker)"
+                    evidence=f"Proof #{row['id']}"
                 else:
                     link_budget-=len(evidence)
-                grouped[group].append(f"{mark} {name} · **{self.fmt(row['ms'])}** / {times[tier]} · {evidence}")
-        for group,label in zip(GROUPS,GROUP_LABELS):
+                line=f"{mark} {label} · **{actual}** / {times[tier]} · {evidence}"
+            grouped[group].append(line)
+        for group,label in zip(GROUPS,("Theatre of Blood","CoX Challenge Mode","Tombs of Amascut","Inferno / Colosseum")):
             batch=[]
             for line in grouped[group]:
                 if batch and len("\n".join(batch+[line]))>1000:
@@ -229,8 +237,9 @@ class DiaryCog(commands.Cog):
                 batch.append(line)
             if batch:
                 e.add_field(name=label,value="\n".join(batch),inline=False)
-        e.add_field(name="Eligibility",value="Run date must be on/after WOM join date; all teammates must have been clan members on the run date. Three-month tenure required. ToA invocation needs confirmation. Rank approval remains manual during preview.",inline=False)
-        e.set_footer(text=f"Novus Apex • Diary preview • {member_id}")
+        time_status="✅ **Time goals met**" if done==total else f"▫️ **Time goals:** {done}/{total}"
+        e.add_field(name="Diary Status",value=f"{time_status}\nWOM join date, team membership & 3-month tenure: pending\nToA invocation: staff confirmation\nStaff approval pending",inline=False)
+        e.set_footer(text="Novus Apex • Diary Preview")
         return e
 
     @app_commands.command(name="diary",description="View your Novus Apex PvM Diary progress")
@@ -277,6 +286,15 @@ class DiaryCog(commands.Cog):
             await self.store.conn.execute("INSERT OR REPLACE INTO diary_ticket_previews VALUES (?,?,?,?)",(channel,member,message,tier))
             await self.store.conn.commit()
 
+    def is_diary_message(self,msg,member):
+        if msg.author.id!=self.bot.user.id:
+            return False
+        return any(
+            e.footer.text==f"Novus Apex • Diary preview • {member}"
+            or (e.footer.text=="Novus Apex • Diary Preview" and (e.description or "").split("\n",1)[0]==f"**Applicant:** <@{member}>")
+            for e in msg.embeds
+        )
+
     async def publish(self,ch):
         if not isinstance(ch,discord.TextChannel) or ch.guild.id!=GUILD or ch.category_id!=CATEGORY:
             return
@@ -288,9 +306,8 @@ class DiaryCog(commands.Cog):
             member=await self.ticket_applicant(ch)
             if member is None:
                 return
-            marker=f"Novus Apex • Diary preview • {member}"
             async for msg in ch.history(limit=100):
-                if msg.author.id==self.bot.user.id and any(e.footer.text==marker for e in msg.embeds):
+                if self.is_diary_message(msg,member):
                     await self.save_ticket(ch.id,member,msg.id,0)
                     return
             best=await self.best(member)
@@ -352,7 +369,7 @@ class DiaryCog(commands.Cog):
                     if not current or await self.ticket_applicant(ch)!=current["member"]:
                         continue
                     msg=await ch.fetch_message(current["message"])
-                    if msg.author.id!=self.bot.user.id or not any(e.footer.text==f"Novus Apex • Diary preview • {current['member']}" for e in msg.embeds):
+                    if not self.is_diary_message(msg,current["member"]):
                         continue
                     best=await self.best(current["member"])
                     if await self.ticket_applicant(ch)!=current["member"]:
