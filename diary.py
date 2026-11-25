@@ -469,7 +469,7 @@ class DiaryCog(commands.Cog):
                 line=f"▫️ {label}: — / {times[tier]}"
             else:
                 verified=getattr(best,"verified",None)
-                mark="⚠️" if verified is not None and name not in verified else (f"{check()}" if row["ms"]<=threshold(times[tier]) else "❌")
+                mark="⚠️" if verified is not None and name not in verified else (f"{check()}" if row["ms"]<=threshold(times[tier]) else "✖️")
                 actual=self.fmt(row["ms"]).removesuffix(".00")
                 evidence=self.proof_link(row) or f"Proof #{row['id']}"
                 if len(evidence)>min(750,link_budget):
