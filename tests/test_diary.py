@@ -1,6 +1,6 @@
 import unittest
 from datetime import date
-from diary import CHALLENGES, DiaryEvidence, best_candidates, progress, threshold, verified_run
+from diary import CHALLENGES, DiaryEvidence, best_candidates, progress, threshold, verified_run, eligible_record, record_fingerprint
 
 def row(c, sid=1, **changes):
     name,group,category,activity,variant,size,times=c
@@ -47,3 +47,19 @@ class DiaryTest(unittest.TestCase):
         best=best_candidates([row(CHALLENGES[0])],1,date(2026,11,25))
         self.assertEqual(progress(DiaryEvidence(best,{},snapshot_available=True),0)[1],0)
         self.assertEqual(progress(DiaryEvidence(best,best,snapshot_available=True),0)[1],1)
+
+    def test_staff_attestation_cannot_override_applicant_join_date(self):
+        run=row(CHALLENGES[0])
+        members={"1":{"joined":"2026-11-11"},"2":{"joined":"2026-11-10"}}
+        self.assertFalse(eligible_record(run,1,members,{"team_verified":1}))
+        self.assertTrue(eligible_record(run,2,members,{"team_verified":1}))
+    def test_toa_invocation_must_be_attested(self):
+        run=row(CHALLENGES[7])
+        members={"1":{"joined":"2026-11-10"}}
+        self.assertFalse(eligible_record(run,1,members))
+        self.assertTrue(eligible_record(run,1,members,{"invocation_300":1}))
+    def test_changed_evidence_requires_new_attestation(self):
+        run=row(CHALLENGES[0],guild=123)
+        self.assertNotEqual(record_fingerprint(run),record_fingerprint(dict(run,pb_date="2026-11-12")))
+        self.assertNotEqual(record_fingerprint(run),record_fingerprint(dict(run,proof="new-proof")))
+        self.assertNotEqual(record_fingerprint(run),record_fingerprint(dict(run,member_ids="1,9")))
