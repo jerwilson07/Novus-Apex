@@ -88,6 +88,7 @@ class DiaryEvidence(dict):
         self.membership=membership
         self.snapshot_available=snapshot_available
         self.award=award
+        self.snapshot=None
 
 def verified_run(row,members):
     try:
@@ -124,6 +125,31 @@ def rank_ready(best,tier):
     _,done,total=progress(best,tier)
     return done==total
 
+def review_plan(best,tier):
+    """Select the minimum required displayed records, preferring verified ones."""
+    if not getattr(best,"snapshot_available",False) or not getattr(best,"membership",None):
+        return None
+    eligible=best.membership.get("tenure_eligible")
+    if not eligible or datetime.now(ZoneInfo("America/New_York")).date()<date.fromisoformat(eligible):
+        return None
+    joined=date.fromisoformat(best.membership["joined"])
+    verified=best.verified or {}
+    grouped={g:[] for g in GROUPS}
+    for name,group,_,_,_,_,times in CHALLENGES:
+        row=best.get(name)
+        if not row or row["ms"]>threshold(times[tier]) or date.fromisoformat(row["pb_date"])<joined:
+            continue
+        automatic=name in verified and verified[name]["id"]==row["id"]
+        grouped[group].append((not automatic,row["ms"],row["id"],name,row))
+    result={}
+    for group,cap in zip(GROUPS,RULES[tier]):
+        choices=sorted(grouped[group],key=lambda c:c[:3])
+        if len(choices)<cap:
+            return None
+        for _,_,_,name,row in choices[:cap]:
+            result[name]=row
+    return result
+
 def progress(best,tier):
     # When the bridge is unavailable, these are provisional time goals only.
     if getattr(best,"verified",None) is not None:
@@ -151,21 +177,12 @@ def rank_emoji(guild,tier):
         return str(sorted(matches,key=lambda e:(e.name.casefold()!=name,e.id))[0])+" "
     return ""
 
-class VerifyExceptionModal(ui.Modal,title="Verify Diary Evidence"):
-    pb_id=ui.TextInput(label="Apex PB submission ID",placeholder="ID from the proof picker",max_length=19)
-    invocation=ui.TextInput(label="ToA invocation (only if required)",placeholder="300",required=False,max_length=3)
-    historical=ui.TextInput(label="Historical team membership evidence",placeholder="WOM dates / source link, only if automatic check fails",style=discord.TextStyle.paragraph,required=False,max_length=500)
-    def __init__(self,view):
-        super().__init__(timeout=300)
-        self.view=view
-    async def on_submit(self,i):
-        await self.view.cog.verify_exception(i,self.view.member_id,self.view.tier,self.pb_id.value,self.invocation.value,self.historical.value)
-
 class DiaryView(ui.View):
     def __init__(self,cog,member_id,best,tier=0,*,ticket=False):
         super().__init__(timeout=None if ticket else 900)
         self.cog,self.member_id,self.ticket=cog,member_id,ticket
         self.tier=tier
+        self.shown={name:record_fingerprint(row) for name,row in best.items()}
         self.tier_select=ui.Select(
             placeholder="Select Rank",custom_id=f"diary:tier:{member_id}",
             options=[discord.SelectOption(label=rank,value=str(i),default=i==tier) for i,rank in enumerate(RANKS)],
@@ -178,10 +195,7 @@ class DiaryView(ui.View):
         if not ticket:
             self.add_item(ui.Button(label="Open Review Ticket",style=discord.ButtonStyle.link,url=PANEL,row=1))
         if ticket:
-            self.verify=ui.Button(label="Verify Exceptions",style=discord.ButtonStyle.primary,custom_id=f"diary:verify:{member_id}:{tier}",row=1)
-            self.verify.callback=self.verify_clicked
-            self.add_item(self.verify)
-            self.approve=ui.Button(label="Approve Diary",style=discord.ButtonStyle.success,custom_id=f"diary:approve:{member_id}:{tier}",row=1,disabled=not rank_ready(best,tier) or bool(best.award is not None and best.award>=tier))
+            self.approve=ui.Button(label=f"Grant {RANKS[tier]}",style=discord.ButtonStyle.success,custom_id=f"diary:approve:{member_id}:{tier}",row=1,disabled=not bool(review_plan(best,tier)) or bool(best.award is not None and best.award>=tier))
             self.approve.callback=self.approve_clicked
             self.add_item(self.approve)
         # The proof picker is a durable fallback, even if a signed link expires.
@@ -199,14 +213,10 @@ class DiaryView(ui.View):
             return True
         await i.response.send_message("This diary belongs to another member.",ephemeral=True)
         return False
-    async def verify_clicked(self,i):
-        if not staff(i.user):
-            return await i.response.send_message("Staff only.",ephemeral=True)
-        await i.response.send_modal(VerifyExceptionModal(self))
     async def approve_clicked(self,i):
         if not staff(i.user):
             return await i.response.send_message("Staff only.",ephemeral=True)
-        await self.cog.approve_rank(i,self.member_id,self.tier)
+        await self.cog.approve_rank(i,self.member_id,self.tier,self.shown)
     async def select_tier(self,i):
         await self.update(i,int(self.tier_select.values[0]))
     async def refresh_diary(self,i):
@@ -334,56 +344,16 @@ class DiaryCog(commands.Cog):
             # ToA requires invocation evidence; generic Expert Solo is insufficient.
             attestations={r["fingerprint"]:dict(r) for r in await self.store.all("SELECT * FROM diary_attestations")}
             verified=best_candidates([r for r in rows if eligible_record(r,member_id,snapshot,attestations.get(record_fingerprint(r)))],member_id)
-            display={**candidates,**verified}
-            best=DiaryEvidence(display,verified,snapshot.get(str(member_id)),True)
+            membership=snapshot.get(str(member_id))
+            dated=best_candidates([r for r in rows if membership and r["pb_date"] and r["pb_date"]>=membership["joined"]],member_id)
+            display={**candidates,**dated,**verified}
+            best=DiaryEvidence(display,verified,membership,True)
+            best.snapshot=snapshot
         award=await self.store.one("SELECT MAX(tier) AS tier FROM diary_rank_awards WHERE member=? AND status='approved'",(member_id,))
         best.award=award["tier"] if award else None
         if resolve_links and best:
             await self.refresh_proofs(list(best.values()))
         return best
-
-    async def verify_exception(self,i,member_id,tier,raw_id,invocation,historical):
-        if not staff(i.user) or i.guild_id!=GUILD or await self.ticket_applicant(i.channel)!=member_id:
-            return await i.response.send_message("Staff review ticket only.",ephemeral=True)
-        if not raw_id.strip().isdigit() or not 0<int(raw_id)<2**63:
-            return await i.response.send_message("Enter a valid Apex PB ID.",ephemeral=True)
-        if invocation.strip() not in ("","300"):
-            return await i.response.send_message("The diary requires a confirmed level 300 solo.",ephemeral=True)
-        await i.response.defer(ephemeral=True,thinking=True)
-        sid=int(raw_id)
-        snapshot=await self.membership_snapshot()
-        if snapshot is None or str(member_id) not in snapshot:
-            return await i.followup.send("WOM membership must be available first. Refresh the diary after Sync updates.",ephemeral=True)
-        record=await self.store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(GUILD,sid))
-        if not record or not best_candidates([record],member_id):
-            return await i.followup.send("That PB is not an approved, dated diary submission for this applicant.",ephemeral=True)
-        if date.fromisoformat(record["pb_date"])<date.fromisoformat(snapshot[str(member_id)]["joined"]):
-            return await i.followup.send("This PB predates the applicant's WOM join date.",ephemeral=True)
-        fp=record_fingerprint(record)
-        existing=await self.store.one("SELECT * FROM diary_attestations WHERE fingerprint=?",(fp,))
-        team_needed=not verified_run(record,snapshot) and not (existing and existing["team_verified"])
-        toa_needed=record["activity"]=="Tombs of Amascut" and not (existing and existing["invocation_300"])
-        if not team_needed and not toa_needed:
-            return await i.followup.send("This PB already has the necessary verification.",ephemeral=True)
-        if team_needed and len(historical.strip())<12:
-            return await i.followup.send("Document the WOM evidence confirming every teammate was in Novus on the run date.",ephemeral=True)
-        if toa_needed and invocation.strip()!="300":
-            return await i.followup.send("Confirm the proof visibly shows a level 300 solo.",ephemeral=True)
-        if await self.ticket_applicant(i.channel)!=member_id:
-            return await i.followup.send("Ticket ownership changed.",ephemeral=True)
-        when=datetime.now(timezone.utc).isoformat()
-        team=int(bool(team_needed or (existing and existing["team_verified"])))
-        toa=int(bool(toa_needed or (existing and existing["invocation_300"])))
-        evidence=(historical.strip() if team_needed else "")+(" | Staff confirmed level 300 in original proof" if toa_needed else "")
-        async with self.store.lock:
-            current=await self.store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(GUILD,sid))
-            if not current or current["status"]!="approved" or record_fingerprint(current)!=fp:
-                return await i.followup.send("PB changed during review. Reopen the verification form.",ephemeral=True)
-            await self.store.conn.execute("INSERT OR REPLACE INTO diary_attestations VALUES (?,?,?,?,?,?,?)",(fp,sid,team,toa,evidence,i.user.id,when))
-            await self.store.conn.execute("INSERT INTO diary_verification_audit(pb,fingerprint,team_verified,invocation_300,evidence,reviewer,reviewed_at) VALUES (?,?,?,?,?,?,?)",(sid,fp,team,toa,evidence,i.user.id,when))
-            await self.store.conn.commit()
-        await self.update_ticket(i.channel,member_id,tier)
-        await i.followup.send(f"✅ PB #{sid} verified. Staff review recorded.",ephemeral=True)
 
     async def update_ticket(self,ch,member_id,tier):
         async with self.locks.setdefault(ch.id,asyncio.Lock()):
@@ -399,7 +369,7 @@ class DiaryCog(commands.Cog):
             await msg.edit(embed=self.embed(ch.guild,member_id,best,tier),view=DiaryView(self,member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
             await self.save_ticket(ch.id,member_id,msg.id,tier)
 
-    async def approve_rank(self,i,member_id,tier):
+    async def approve_rank(self,i,member_id,tier,shown):
         if not staff(i.user) or i.guild_id!=GUILD or await self.ticket_applicant(i.channel)!=member_id:
             return await i.response.send_message("Staff review ticket only.",ephemeral=True)
         if i.user.id==member_id:
@@ -407,8 +377,11 @@ class DiaryCog(commands.Cog):
         await i.response.defer(ephemeral=True,thinking=True)
         async with self.award_locks.setdefault(member_id,asyncio.Lock()):
             best=await self.best(member_id,resolve_links=False)
-            if not rank_ready(best,tier):
-                return await i.followup.send("Rank requirements or WOM tenure are not verified. Refresh the diary.",ephemeral=True)
+            plan=review_plan(best,tier)
+            if not plan:
+                return await i.followup.send("Required times or WOM tenure are not met. Refresh the diary.",ephemeral=True)
+            if any(shown.get(name)!=record_fingerprint(row) for name,row in plan.items()):
+                return await i.followup.send("The diary evidence changed. Refresh and review the current proof before granting.",ephemeral=True)
             member=await i.guild.fetch_member(member_id)
             if not member_role(member) or await self.ticket_applicant(i.channel)!=member_id:
                 return await i.followup.send("Applicant is no longer a verified ticket owner.",ephemeral=True)
@@ -422,14 +395,27 @@ class DiaryCog(commands.Cog):
             previous=await self.store.one("SELECT status FROM diary_rank_awards WHERE member=? AND tier=?",(member_id,tier))
             if previous and previous["status"]=="approved":
                 return await i.followup.send("This diary rank was already approved.",ephemeral=True)
-            ids=json.dumps(sorted(r["id"] for r in best.verified.values()))
+            ids=json.dumps(sorted(r["id"] for r in plan.values()))
             when=datetime.now(timezone.utc).isoformat()
             async with self.store.lock:
-                # Check that the evidence remains approved before recording intent.
-                for record in best.verified.values():
+                for record in plan.values():
                     current=await self.store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(GUILD,record["id"]))
                     if not current or current["status"]!="approved" or record_fingerprint(current)!=record_fingerprint(record):
-                        return await i.followup.send("PB evidence changed. Refresh the diary and review again.",ephemeral=True)
+                        return await i.followup.send("PB evidence changed. Refresh and review again.",ephemeral=True)
+                # The final grant is staff's attestation of the displayed proof
+                # and any specifically flagged historical membership exceptions.
+                for name,record in plan.items():
+                    fp=record_fingerprint(record)
+                    old=await self.store.one("SELECT * FROM diary_attestations WHERE fingerprint=?",(fp,))
+                    team=int(bool(not verified_run(record,best.snapshot) or (old and old["team_verified"])))
+                    toa=int(bool(record["activity"]=="Tombs of Amascut" or (old and old["invocation_300"])))
+                    if not team and not toa:
+                        continue
+                    if old and old["team_verified"]==team and old["invocation_300"]==toa:
+                        continue
+                    evidence="Staff confirmed displayed evidence at final diary grant; ticket "+str(i.channel_id)
+                    await self.store.conn.execute("INSERT OR REPLACE INTO diary_attestations VALUES (?,?,?,?,?,?,?)",(fp,record["id"],team,toa,evidence,i.user.id,when))
+                    await self.store.conn.execute("INSERT INTO diary_verification_audit(pb,fingerprint,team_verified,invocation_300,evidence,reviewer,reviewed_at) VALUES (?,?,?,?,?,?,?)",(record["id"],fp,team,toa,evidence,i.user.id,when))
                 await self.store.conn.execute("INSERT OR REPLACE INTO diary_rank_awards VALUES (?,?,?,?,?,?,?)",(member_id,tier,i.user.id,i.channel_id,when,ids,"pending"))
                 await self.store.conn.commit()
             try:
@@ -442,7 +428,7 @@ class DiaryCog(commands.Cog):
                 await self.store.conn.commit()
             logger.info("Diary rank approved member=%s tier=%s reviewer=%s",member_id,RANKS[tier],i.user.id)
         await self.update_ticket(i.channel,member_id,tier)
-        await i.followup.send(f"✅ {RANKS[tier]} approved and assigned.",ephemeral=True)
+        await i.followup.send(f"✅ {RANKS[tier]} granted.",ephemeral=True)
 
     def embed(self,guild,member_id,best,tier):
         counts,done,total=progress(best,tier)
@@ -502,13 +488,15 @@ class DiaryCog(commands.Cog):
             checks=[time_status,f"✅ WOM joined: {membership['joined']}",
                     "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {eligible}" if eligible else "⚠️ Tenure date unavailable")]
             if any(name not in best.verified for name in best if name!="ToA 300 Solo"):
-                checks.append("⚠️ Some run dates / teams unverified")
+                checks.append("⚠️ Review flagged team dates")
         if "ToA 300 Solo" in best and (best.verified is None or "ToA 300 Solo" not in best.verified):
-            checks.append("⚠️ ToA verification needed")
+            checks.append("⚠️ Confirm ToA 300 in proof")
         if best.award is not None and best.award>=tier:
             checks.append(f"✅ **{RANKS[best.award]} approved**")
-        elif rank_ready(best,tier):
-            checks.append("✅ **Ready for staff approval**")
+        elif review_plan(best,tier):
+            checks.append("**Ready for final review**")
+            if not rank_ready(best,tier):
+                checks.append("-# Grant confirms flagged evidence, including ToA 300 and historical team membership.")
         e.add_field(name="Diary Status",value="\n".join(checks),inline=False)
         e.set_footer(text="Novus Apex • Diary Preview")
         return e
