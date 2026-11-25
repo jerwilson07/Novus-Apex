@@ -717,6 +717,9 @@ intents=discord.Intents.default()
 class PB(commands.Bot):
  async def setup_hook(self):
   await store.open()
+  # Install diary before syncing application commands.
+  from diary import install as install_diary
+  await install_diary(self,store,fmt,show_record_proof)
   self.add_dynamic_items(BoardProofSelect,BoardProofButton)
   self.add_view(Home())
   self.add_view(BossDirectory())
