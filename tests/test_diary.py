@@ -1,6 +1,6 @@
 import unittest
 from datetime import date
-from diary import CHALLENGES, best_candidates, progress, threshold
+from diary import CHALLENGES, DiaryEvidence, best_candidates, progress, threshold, verified_run
 
 def row(c, sid=1, **changes):
     name,group,category,activity,variant,size,times=c
@@ -34,3 +34,16 @@ class DiaryTest(unittest.TestCase):
         best=best_candidates(rows,1,date(2026,11,25))
         self.assertEqual(best[c[0]]["id"],2)
         self.assertEqual([progress(best,i)[1] for i in range(3)],[1,1,0])
+
+    def test_wom_join_date_inclusive_for_all_teammates(self):
+        run=row(CHALLENGES[0])
+        members={"1":{"joined":"2026-11-10"},"2":{"joined":"2026-11-10"}}
+        self.assertTrue(verified_run(run,members))
+        members["2"]["joined"]="2026-11-11"
+        self.assertFalse(verified_run(run,members))
+        self.assertFalse(verified_run(run,{"1":{"joined":"2026-11-10"}}))
+
+    def test_verified_progress_ignores_unverified_candidates(self):
+        best=best_candidates([row(CHALLENGES[0])],1,date(2026,11,25))
+        self.assertEqual(progress(DiaryEvidence(best,{},snapshot_available=True),0)[1],0)
+        self.assertEqual(progress(DiaryEvidence(best,best,snapshot_available=True),0)[1],1)
