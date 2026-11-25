@@ -268,6 +268,7 @@ class DiaryCog(commands.Cog):
 
     def cog_unload(self):
         self.refresh_ticket_cards.cancel()
+        self.retry_wom_bridge.cancel()
 
     async def initialize(self):
         async with self.store.lock:
@@ -622,8 +623,18 @@ class DiaryCog(commands.Cog):
                 except Exception:
                     logger.exception("Diary ticket recovery failed")
         await self.membership_snapshot()
+        self.retry_wom_bridge.start()
         self.refresh_ticket_cards.start()
         logger.info("Novus Apex diary ready; WOM bridge and staff review controls enabled")
+
+    @tasks.loop(minutes=1)
+    async def retry_wom_bridge(self):
+        # Start order between independent services must not strand the diary.
+        # A successful first read refreshes the existing private ticket cards.
+        previously_ready=self.bridge_logged
+        snapshot=await self.membership_snapshot()
+        if snapshot is not None and not previously_ready:
+            await self.refresh_ticket_cards()
 
     @tasks.loop(hours=2)
     async def refresh_ticket_cards(self):
