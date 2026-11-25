@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import discord
+from novus_logging import check, notice, bind_novus_ui
 from discord import app_commands, ui
 from discord.ext import commands, tasks
 
@@ -210,14 +211,14 @@ class DiaryView(ui.View):
     async def interaction_check(self,i):
         if i.guild_id==GUILD and ((i.user.id==self.member_id and member_role(i.user)) or staff(i.user)):
             if self.ticket and not await self.cog.ticket_applicant(i.channel)==self.member_id:
-                await i.response.send_message("Ticket ownership could not be confirmed.",ephemeral=True)
+                await notice(i, False, "Ticket ownership could not be confirmed.",ephemeral=True)
                 return False
             return True
-        await i.response.send_message("This diary belongs to another member.",ephemeral=True)
+        await notice(i, False, "This diary belongs to another member.",ephemeral=True)
         return False
     async def approve_clicked(self,i):
         if not staff(i.user):
-            return await i.response.send_message("Staff only.",ephemeral=True)
+            return await notice(i, False, "Staff only.",ephemeral=True)
         await self.cog.approve_rank(i,self.member_id,self.tier,self.shown)
     async def select_tier(self,i):
         await self.update(i,int(self.tier_select.values[0]))
@@ -228,10 +229,10 @@ class DiaryView(ui.View):
         if self.ticket and i.message:
             async with self.cog.locks.setdefault(i.channel_id,asyncio.Lock()):
                 if await self.cog.ticket_applicant(i.channel)!=self.member_id:
-                    return await i.followup.send("Ticket ownership could not be confirmed.",ephemeral=True)
+                    return await notice(i, True, "Ticket ownership could not be confirmed.",ephemeral=True)
                 best=await self.cog.best(self.member_id)
                 if await self.cog.ticket_applicant(i.channel)!=self.member_id:
-                    return await i.followup.send("Ticket ownership could not be confirmed.",ephemeral=True)
+                    return await notice(i, True, "Ticket ownership could not be confirmed.",ephemeral=True)
                 await i.edit_original_response(embed=self.cog.embed(i.guild,self.member_id,best,tier,ticket=True),view=DiaryView(self.cog,self.member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
                 await self.cog.save_ticket(i.channel_id,self.member_id,i.message.id,tier)
         else:
@@ -241,15 +242,15 @@ class DiaryView(ui.View):
         sid=int(self.proof.values[0])
         best=await self.cog.best(self.member_id,resolve_links=False)
         if not any(row["id"]==sid for row in best.values()):
-            return await i.response.send_message("That record changed. Refresh the diary.",ephemeral=True)
+            return await notice(i, False, "That record changed. Refresh the diary.",ephemeral=True)
         await self.cog.show_proof(i,sid)
     async def on_error(self,i,error,item):
         logger.error("Diary interaction failed",exc_info=(type(error),error,error.__traceback__))
         try:
             if i.response.is_done():
-                await i.followup.send("Could not refresh the diary. Try again.",ephemeral=True)
+                await notice(i, True, "Could not refresh the diary. Try again.",ephemeral=True)
             else:
-                await i.response.send_message("Could not refresh the diary. Try again.",ephemeral=True)
+                await notice(i, False, "Could not refresh the diary. Try again.",ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -384,37 +385,37 @@ class DiaryCog(commands.Cog):
 
     async def approve_rank(self,i,member_id,tier,shown):
         if not staff(i.user) or i.guild_id!=GUILD or await self.ticket_applicant(i.channel)!=member_id:
-            return await i.response.send_message("Staff review ticket only.",ephemeral=True)
+            return await notice(i, False, "Staff review ticket only.",ephemeral=True)
         if i.user.id==member_id:
-            return await i.response.send_message("Another staff member must approve your diary.",ephemeral=True)
+            return await notice(i, False, "Another staff member must approve your diary.",ephemeral=True)
         await i.response.defer(ephemeral=True,thinking=True)
         async with self.award_locks.setdefault(member_id,asyncio.Lock()):
             best=await self.best(member_id,resolve_links=False)
             plan=review_plan(best,tier)
             if not plan:
-                return await i.followup.send("Required times or WOM tenure are not met. Refresh the diary.",ephemeral=True)
+                return await notice(i, True, "Required times or WOM tenure are not met. Refresh the diary.",ephemeral=True)
             if any(shown.get(name)!=record_fingerprint(row) for name,row in plan.items()):
-                return await i.followup.send("The diary evidence changed. Refresh and review the current proof before granting.",ephemeral=True)
+                return await notice(i, True, "The diary evidence changed. Refresh and review the current proof before granting.",ephemeral=True)
             member=await i.guild.fetch_member(member_id)
             if not member_role(member) or await self.ticket_applicant(i.channel)!=member_id:
-                return await i.followup.send("Applicant is no longer a verified ticket owner.",ephemeral=True)
+                return await notice(i, True, "Applicant is no longer a verified ticket owner.",ephemeral=True)
             roles=[r for r in i.guild.roles if r.name.casefold()==RANKS[tier].casefold() and not r.managed]
             if len(roles)!=1 or not roles[0].is_assignable():
-                return await i.followup.send("Apex cannot assign that rank. Council must check role permissions and hierarchy.",ephemeral=True)
+                return await notice(i, True, "Apex cannot assign that rank. Council must check role permissions and hierarchy.",ephemeral=True)
             role=roles[0]
             existing_names={r.name.casefold() for r in member.roles}
             if any(rank.casefold() in existing_names for rank in RANKS[tier+1:]):
-                return await i.followup.send("Member already holds a higher PvM Diary rank.",ephemeral=True)
+                return await notice(i, True, "Member already holds a higher PvM Diary rank.",ephemeral=True)
             previous=await self.store.one("SELECT status FROM diary_rank_awards WHERE member=? AND tier=?",(member_id,tier))
             if previous and previous["status"]=="approved":
-                return await i.followup.send("This diary rank was already approved.",ephemeral=True)
+                return await notice(i, True, "This diary rank was already approved.",ephemeral=True)
             ids=json.dumps(sorted(r["id"] for r in plan.values()))
             when=datetime.now(timezone.utc).isoformat()
             async with self.store.lock:
                 for record in plan.values():
                     current=await self.store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(GUILD,record["id"]))
                     if not current or current["status"]!="approved" or record_fingerprint(current)!=record_fingerprint(record):
-                        return await i.followup.send("PB evidence changed. Refresh and review again.",ephemeral=True)
+                        return await notice(i, True, "PB evidence changed. Refresh and review again.",ephemeral=True)
                 # The final grant is staff's attestation of the displayed proof
                 # and any specifically flagged historical membership exceptions.
                 for name,record in plan.items():
@@ -435,13 +436,13 @@ class DiaryCog(commands.Cog):
                 if role not in member.roles:
                     await member.add_roles(role,reason=f"Novus PvM Diary approved by {i.user.id}")
             except discord.HTTPException:
-                return await i.followup.send("Discord did not allow the rank assignment. Council must check Apex permissions.",ephemeral=True)
+                return await notice(i, True, "Discord did not allow the rank assignment. Council must check Apex permissions.",ephemeral=True)
             async with self.store.lock:
                 await self.store.conn.execute("UPDATE diary_rank_awards SET status='approved' WHERE member=? AND tier=?",(member_id,tier))
                 await self.store.conn.commit()
             logger.info("Diary rank approved member=%s tier=%s reviewer=%s",member_id,RANKS[tier],i.user.id)
         await self.update_ticket(i.channel,member_id,tier)
-        await i.followup.send(f"✅ {RANKS[tier]} granted.",ephemeral=True)
+        await notice(i, True, f"{check()} {RANKS[tier]} granted.",ephemeral=True)
 
     def embed(self,guild,member_id,best,tier,*,ticket=False):
         counts,done,total=progress(best,tier)
@@ -468,7 +469,7 @@ class DiaryCog(commands.Cog):
                 line=f"▫️ {label}: — / {times[tier]}"
             else:
                 verified=getattr(best,"verified",None)
-                mark="⚠️" if verified is not None and name not in verified else ("✅" if row["ms"]<=threshold(times[tier]) else "❌")
+                mark="⚠️" if verified is not None and name not in verified else (f"{check()}" if row["ms"]<=threshold(times[tier]) else "❌")
                 actual=self.fmt(row["ms"]).removesuffix(".00")
                 evidence=self.proof_link(row) or f"Proof #{row['id']}"
                 if len(evidence)>min(750,link_budget):
@@ -488,7 +489,7 @@ class DiaryCog(commands.Cog):
                 batch.append(line)
             if batch:
                 e.add_field(name=heading,value="\n".join(batch)+"\n\u200b",inline=False)
-        time_status=f"{'✅' if done==total else '▫️'} **Challenges completed:** {done}/{total}"
+        time_status=f"{check() if done==total else '▫️'} **Challenges completed:** {done}/{total}"
         membership=getattr(best,"membership",None)
         if not getattr(best,"snapshot_available",False):
             checks=[time_status,"WOM sync unavailable • provisional"]
@@ -498,14 +499,14 @@ class DiaryCog(commands.Cog):
             eligible=membership.get("tenure_eligible")
             today=datetime.now(ZoneInfo("America/New_York")).date()
             tenure_met=bool(eligible and today>=date.fromisoformat(eligible))
-            checks=[time_status,f"✅ Current clan stint: {date.fromisoformat(membership['joined']).strftime('%b %d, %Y').replace(' 0', ' ')}",
-                    "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {date.fromisoformat(eligible).strftime('%b %d, %Y').replace(' 0', ' ')}" if eligible else "⚠️ Tenure date unavailable")]
+            checks=[time_status,f"{check()} Current clan stint: {date.fromisoformat(membership['joined']).strftime('%b %d, %Y').replace(' 0', ' ')}",
+                    f"{check()} 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {date.fromisoformat(eligible).strftime('%b %d, %Y').replace(' 0', ' ')}" if eligible else "⚠️ Tenure date unavailable")]
             if any(name not in best.verified for name in best if name!="ToA 300 Solo"):
                 checks.append("⚠️ Review flagged team dates")
         if "ToA 300 Solo" in best and (best.verified is None or "ToA 300 Solo" not in best.verified):
             checks.append("⚠️ Confirm ToA 300 in proof")
         if best.award is not None and best.award>=tier:
-            checks.append(f"✅ **{RANKS[best.award]} approved**")
+            checks.append(f"{check()} **{RANKS[best.award]} approved**")
         elif review_plan(best,tier):
             checks.append("**Ready for final review**")
             if not rank_ready(best,tier):
@@ -519,15 +520,15 @@ class DiaryCog(commands.Cog):
     @app_commands.guild_only()
     async def diary(self,i:discord.Interaction,member:discord.Member=None):
         if i.guild_id!=GUILD:
-            return await i.response.send_message("Novus only.",ephemeral=True)
+            return await notice(i, False, "Novus only.",ephemeral=True)
         if member is not None and member.id!=i.user.id and not staff(i.user):
-            return await i.response.send_message("Only staff can inspect another member's diary.",ephemeral=True)
+            return await notice(i, False, "Only staff can inspect another member's diary.",ephemeral=True)
         target=member or i.user
         if not member_role(target):
-            return await i.response.send_message("The PvM Diary is for current Novus Members.",ephemeral=True)
+            return await notice(i, False, "The PvM Diary is for current Novus Members.",ephemeral=True)
         await i.response.defer(ephemeral=True,thinking=True)
         best=await self.best(target.id)
-        await i.followup.send(embed=self.embed(i.guild,target.id,best,0),view=DiaryView(self,target.id,best),ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
+        await notice(i, True, embed=self.embed(i.guild,target.id,best,0),view=DiaryView(self,target.id,best),ephemeral=True,allowed_mentions=discord.AllowedMentions.none())
 
     async def ticket_applicant(self,ch):
         if not isinstance(ch,discord.TextChannel) or ch.guild.id!=GUILD or ch.category_id!=CATEGORY:

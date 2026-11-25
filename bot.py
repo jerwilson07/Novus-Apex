@@ -8,6 +8,7 @@ import aiohttp, discord, aiosqlite
 from discord import app_commands, ui
 from discord.ext import commands
 from dotenv import load_dotenv
+from novus_logging import check, notice, bind_novus_ui
 from novus_logging import (LoggedCommandTree, LoggedModal, LoggedView, configure_logging,
                            report_interaction_error, start_logged_task)
 from proof_archive import (
@@ -738,6 +739,7 @@ class PB(commands.Bot):
    await asyncio.gather(task,return_exceptions=True)
   await super().close()
 bot=PB(command_prefix=commands.when_mentioned,intents=intents,tree_cls=LoggedCommandTree)
+bind_novus_ui(bot)
 
 
 class PBLayoutView(ui.LayoutView):
@@ -943,11 +945,11 @@ class PersonalPBProfile(PBLayoutView):
 
 async def show_my_pbs(i):
  if not i.guild_id:
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Use this inside the Novus server.",ephemeral=True
   )
  rows=await store.approved_for_points(i.guild_id)
- await i.response.send_message(
+ await notice(i, False, 
   view=PersonalPBProfile(i.user.id,build_member_profile(rows,i.user.id),guild_id=i.guild_id),
   ephemeral=True,allowed_mentions=discord.AllowedMentions.none()
  )
@@ -2913,7 +2915,7 @@ class Review(PBLayoutView):
    )
    async def approve_clicked(i):
     if not is_staff(i):
-     return await i.response.send_message("Staff only.",ephemeral=True)
+     return await notice(i, False, "Staff only.",ephemeral=True)
     if not r["pb_date"]:
      return await i.response.send_modal(ApprovePBDateModal(self.sid))
     await decide(i,self.sid,"approve")
@@ -3230,22 +3232,22 @@ async def refresh_proof_snapshot(guild_id,*,published=None):
 
 async def show_record_proof(i,sid):
  if i.guild_id is None or not 0<sid<2**63:
-  return await i.response.send_message("PB not found.",ephemeral=True)
+  return await notice(i, False, "PB not found.",ephemeral=True)
  # Acknowledge before waiting on SQLite or fetching an old attachment.
  await i.response.defer(ephemeral=True,thinking=True)
  try:
   record=await store.one("SELECT * FROM submissions WHERE guild=? AND id=?",(i.guild_id,sid))
  except aiosqlite.Error:
   logging.exception("Unable to look up proof for PB #%s",sid)
-  return await i.followup.send("Proof is temporarily unavailable. Try again in a moment.",ephemeral=True)
+  return await notice(i, True, "Proof is temporarily unavailable. Try again in a moment.",ephemeral=True)
  if not record or (record["status"]!="approved"
                    and record["submitter"]!=i.user.id and not is_staff(i)):
-  return await i.followup.send("PB not found or not available to you.",ephemeral=True)
+  return await notice(i, True, "PB not found or not available to you.",ephemeral=True)
  proof=record["proof"]
  if not is_private_proof(proof):
   if proof and valid_url(proof):
-   return await i.followup.send(f"Proof for PB #{sid}: <{proof}>",ephemeral=True)
-  return await i.followup.send("No proof was saved for this PB.",ephemeral=True)
+   return await notice(i, True, f"Proof for PB #{sid}: <{proof}>",ephemeral=True)
+  return await notice(i, True, "No proof was saved for this PB.",ephemeral=True)
  if discord_attachment_key(proof):
   try:
    async with aiohttp.ClientSession() as session:
@@ -3258,21 +3260,21 @@ async def show_record_proof(i,sid):
    proof=current["proof"] if current else None
  file=archive_path(DBPATH,proof)
  if not file or not file.is_file():
-  return await i.followup.send(
+  return await notice(i, True, 
    "That original Discord upload could not be recovered. Use `/pbproof` to reattach it, or ask staff if it’s already approved.",
    ephemeral=True,
   )
  try:
   if file.stat().st_size>i.filesize_limit:
-   return await i.followup.send("The archived proof is larger than this Discord server can send.",ephemeral=True)
+   return await notice(i, True, "The archived proof is larger than this Discord server can send.",ephemeral=True)
   upload=discord.File(file,filename=f"PB-{sid}{file.suffix}")
   try:
-   await i.followup.send(f"Proof for PB #{sid}",file=upload,ephemeral=True)
+   await notice(i, True, f"Proof for PB #{sid}",file=upload,ephemeral=True)
   finally:
    upload.close()
  except (discord.HTTPException,OSError):
   logging.exception("Unable to deliver proof for PB #%s",sid)
-  await i.followup.send("Discord couldn’t deliver this proof. Try again in a moment.",ephemeral=True)
+  await notice(i, True, "Discord couldn’t deliver this proof. Try again in a moment.",ephemeral=True)
 
 
 PROOF_BUTTON_ID=re.compile(r"pb:proof:view:([0-9]{1,19})")
@@ -3315,7 +3317,7 @@ class BoardProofSelect(ui.DynamicItem[ui.Select],template=r"pb:proof:pick:(?P<pa
  async def callback(self,i):
   values=self.item.values
   if len(values)!=1 or values[0] not in {option.value for option in self.item.options}:
-   return await i.response.send_message("Select a PB from this list.",ephemeral=True)
+   return await notice(i, False, "Select a PB from this list.",ephemeral=True)
   await show_record_proof(i,int(values[0]))
 
 
@@ -3328,7 +3330,7 @@ class BoardProofModal(LoggedModal,title="View PB Proof"):
  async def on_submit(self,i):
   number=self.number.value.strip()
   if not re.fullmatch(r"[0-9]{1,19}",number):
-   return await i.response.send_message("Enter the PB number shown on the leaderboard.",ephemeral=True)
+   return await notice(i, False, "Enter the PB number shown on the leaderboard.",ephemeral=True)
   await show_record_proof(i,int(number))
 
 
@@ -3360,7 +3362,7 @@ async def save_interaction_proof(i,record,proof):
    async with aiohttp.ClientSession() as session:
     saved=await archive_discord_proof(DBPATH,session,proof)
   except (ProofUnavailable,aiohttp.ClientError,TimeoutError,EOFError,OSError):
-   return await i.followup.send(
+   return await notice(i, True, 
     "Couldn’t archive that upload. Reattach a PNG, JPG, GIF, WebP, MP4, MOV or WebM "
     "file up to 20 MiB, or use a lasting video link.",ephemeral=True,
    )
@@ -3373,13 +3375,13 @@ async def save_interaction_proof(i,record,proof):
   if saved!=proof:
    archive_path(DBPATH,saved).unlink(missing_ok=True)
   logging.exception("Could not save proof for PB #%s",record["id"])
-  return await i.followup.send("Couldn’t save that proof. Try again in a moment.",ephemeral=True)
+  return await notice(i, True, "Couldn’t save that proof. Try again in a moment.",ephemeral=True)
  if not changed:
   if saved!=proof:
    archive_path(DBPATH,saved).unlink(missing_ok=True)
-  return await i.followup.send("This PB changed while proof was uploading. Try again.",ephemeral=True)
+  return await notice(i, True, "This PB changed while proof was uploading. Try again.",ephemeral=True)
  updated=await store.one("SELECT * FROM submissions WHERE id=? AND guild=?",(record["id"],record["guild"]))
- await i.followup.send(
+ await notice(i, True, 
   f"Proof saved for PB #{record['id']}."
   + (" The approval and ranking are unchanged." if record["status"]=="approved"
      else " Staff can review it now."),ephemeral=True,
@@ -4078,38 +4080,38 @@ async def announce_first_place(r, previous_leader):
 
 
 async def decide(i,sid,choice,verified_date=None):
- if not is_staff(i):return await i.response.send_message("Staff only.",ephemeral=True)
+ if not is_staff(i):return await notice(i, False, "Staff only.",ephemeral=True)
  r=await store.one("SELECT * FROM submissions WHERE id=?",(sid,))
- if not r or r["guild"]!=i.guild_id:return await i.response.send_message("Record not found.",ephemeral=True)
- if r["status"] not in ("pending","awaiting_proof"):return await i.response.send_message("Already resolved.",ephemeral=True)
+ if not r or r["guild"]!=i.guild_id:return await notice(i, False, "Record not found.",ephemeral=True)
+ if r["status"] not in ("pending","awaiting_proof"):return await notice(i, False, "Already resolved.",ephemeral=True)
  normalized_date=None
  if choice=="approve":
   if not r["pb_date"] and not verified_date:
-   return await i.response.send_message(
+   return await notice(i, False, 
     "Verify the PB date shown in the screenshot or clip before approving.",ephemeral=True
    )
   if verified_date:
    parsed_date=parse_pb_date(verified_date)
    if parsed_date is None:
-    return await i.response.send_message("Enter the proof date as MM/DD/YYYY or MM-DD-YYYY.",ephemeral=True)
+    return await notice(i, False, "Enter the proof date as MM/DD/YYYY or MM-DD-YYYY.",ephemeral=True)
    if not pb_date_eligible(parsed_date):
-    return await i.response.send_message("Only PBs on or after November 7, 2026 are eligible.",ephemeral=True)
+    return await notice(i, False, "Only PBs on or after November 7, 2026 are eligible.",ephemeral=True)
    if parsed_date>datetime.now(timezone.utc).date():
-    return await i.response.send_message("The PB date cannot be in the future.",ephemeral=True)
+    return await notice(i, False, "The PB date cannot be in the future.",ephemeral=True)
    normalized_date=parsed_date.isoformat()
   saved=archive_path(DBPATH,r["proof"])
   if (not r["proof"] or discord_attachment_key(r["proof"])
       or (saved is not None and not saved.is_file())):
-   return await i.response.send_message(
+   return await notice(i, False, 
     f"Proof is missing or expired. Try `/pbviewproof {sid}` to recover it, or use Request Proof for a new upload.",
     ephemeral=True,
    )
  if choice=="request" and r["status"]=="awaiting_proof":
-  return await i.response.send_message("Already awaiting proof.",ephemeral=True)
+  return await notice(i, False, "Already awaiting proof.",ephemeral=True)
  previous_leader=(await store.best_approved(i.guild_id,r["category"],r["activity"],r["variant"])) if choice=="approve" else None
  target={"approve":"approved","deny":"denied","request":"awaiting_proof"}[choice]
  if not await store.change(sid,r["status"],target,i.user.id,pb_date=normalized_date):
-  return await i.response.send_message("Another reviewer updated this record.",ephemeral=True)
+  return await notice(i, False, "Another reviewer updated this record.",ephemeral=True)
  updated=await store.one("SELECT * FROM submissions WHERE id=?",(sid,))
  await i.response.edit_message(view=await Review.make(updated),allowed_mentions=discord.AllowedMentions.none())
  if choice=="approve":
@@ -4165,16 +4167,16 @@ class ProofUploadModal(LoggedModal,title="NOVUS | PB Proof"):
    (self.sid,i.guild_id)
   )
   if not r or (r["submitter"]!=i.user.id and not is_staff(i)):
-   return await i.response.send_message("PB not found or not yours.",ephemeral=True)
+   return await notice(i, False, "PB not found or not yours.",ephemeral=True)
   if r["status"] not in ("pending","awaiting_proof"):
-   return await i.response.send_message("PB is already resolved.",ephemeral=True)
+   return await notice(i, False, "PB is already resolved.",ephemeral=True)
 
   attachment=self.proof_upload.values[0]
   if not (attachment.content_type or "").startswith(("image/","video/")):
-   return await i.response.send_message("Only image/video files accepted.",ephemeral=True)
+   return await notice(i, False, "Only image/video files accepted.",ephemeral=True)
 
   if not discord_attachment_key(attachment.url):
-   return await i.response.send_message("Discord did not return a valid proof attachment URL.",ephemeral=True)
+   return await notice(i, False, "Discord did not return a valid proof attachment URL.",ephemeral=True)
 
   await save_interaction_proof(i,r,attachment.url)
 
@@ -4196,40 +4198,40 @@ class ProofUploadView(LoggedView):
 
 async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
  try:ms=parse_ms(t)
- except ValueError as e:return await i.response.send_message(str(e),ephemeral=True)
+ except ValueError as e:return await notice(i, False, str(e),ephemeral=True)
 
  # The member enters the time only; staff verifies the run date from the proof.
  # Retain optional legacy dates for previously opened submission forms.
  parsed_date=parse_pb_date(pb_date) if pb_date else None
  if pb_date and parsed_date is None:
-  return await i.response.send_message("Invalid PB date format.",ephemeral=True)
+  return await notice(i, False, "Invalid PB date format.",ephemeral=True)
  if parsed_date and not pb_date_eligible(parsed_date):
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Only PBs achieved on or after **November 7, 2026** are eligible.",ephemeral=True
   )
  if parsed_date and parsed_date>datetime.now(timezone.utc).date():
-  return await i.response.send_message("The PB date cannot be in the future.",ephemeral=True)
+  return await notice(i, False, "The PB date cannot be in the future.",ephemeral=True)
  normalized_date=parsed_date.isoformat() if parsed_date else None
 
  if variant not in CATS.get(cat,{}).get(act,()):
-  return await i.response.send_message("Choose a listed format for this activity.",ephemeral=True)
+  return await notice(i, False, "Choose a listed format for this activity.",ephemeral=True)
  required=team_size(cat,variant,act)
  if not members:
-  return await i.response.send_message("Select at least one party member.",ephemeral=True)
+  return await notice(i, False, "Select at least one party member.",ephemeral=True)
  if cat=="Bosses" and act in NON_SOLO_BOSSES and len(members)>2:
-  return await i.response.send_message(
+  return await notice(i, False, 
    f"Select no more than two Discord members for **{act}**.",
    ephemeral=True
   )
  if required is not None and len(members)!=required:
-  return await i.response.send_message(f"Expected {required} Discord member(s) for this category.",ephemeral=True)
+  return await notice(i, False, f"Expected {required} Discord member(s) for this category.",ephemeral=True)
  if len({m.id for m in members})!=len(members):
-  return await i.response.send_message("Each party member can only be selected once.",ephemeral=True)
+  return await notice(i, False, "Each party member can only be selected once.",ephemeral=True)
  if proof and not valid_url(proof):
-  return await i.response.send_message("Provide an HTTP(S) proof link, or add proof later with /pbproof.",ephemeral=True)
+  return await notice(i, False, "Provide an HTTP(S) proof link, or add proof later with /pbproof.",ephemeral=True)
 
  try:ch=bot.get_channel(REVIEW_ID) or await bot.fetch_channel(REVIEW_ID)
- except discord.HTTPException:return await i.response.send_message("Staff review channel not available.",ephemeral=True)
+ except discord.HTTPException:return await notice(i, False, "Staff review channel not available.",ephemeral=True)
 
  await i.response.defer(thinking=True,ephemeral=True)
  if discord_attachment_key(proof):
@@ -4237,7 +4239,7 @@ async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
    async with aiohttp.ClientSession() as session:
     proof=await archive_discord_proof(DBPATH,session,proof)
   except (ProofUnavailable,aiohttp.ClientError,TimeoutError,EOFError,OSError):
-   return await i.followup.send("Couldn’t archive that upload. Reattach the original proof.",ephemeral=True)
+   return await notice(i, True, "Couldn’t archive that upload. Reattach the original proof.",ephemeral=True)
  names=", ".join(m.display_name for m in members)
  member_ids=",".join(str(m.id) for m in members)
  sid=await store.add(i.guild_id,i.user.id,cat,act,variant,names,member_ids,ms,normalized_date,proof)
@@ -4247,8 +4249,8 @@ async def submit(i,cat,act,variant,t,pb_date,members,proof=""):
   await store.attach_review(sid,ch.id,message.id)
  except discord.HTTPException:
   logging.exception("Staff review message failed")
-  return await i.followup.send(f"Submission #{sid} saved, but staff delivery failed. Notify staff.",ephemeral=True)
- await i.followup.send(
+  return await notice(i, True, f"Submission #{sid} saved, but staff delivery failed. Notify staff.",ephemeral=True)
+ await notice(i, True, 
   f"PB #{sid} submitted for staff review. "
   "The proof must visibly show the run date (November 7, 2026 or later). "
   "All listed players must have been Novus members when the PB was achieved. "
@@ -4272,22 +4274,22 @@ def parse_submission_details(raw):
 async def submit_modal_details(i,category,activity,variant,details_input,members_select,proof_upload):
  parsed=parse_submission_details(details_input.value)
  if not parsed:
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Use **SS.ss or MM:SS.ss**. The run date must be visible in your proof.",
    ephemeral=True
   )
  attachment=next(iter(proof_upload.values),None)
  if attachment is None:
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Upload a dated screenshot or video clip before submitting your PB.",
    ephemeral=True
   )
  if not (attachment.content_type or "").startswith(("image/","video/")):
-  return await i.response.send_message("Only image/video proof files are accepted.",ephemeral=True)
+  return await notice(i, False, "Only image/video proof files are accepted.",ephemeral=True)
  if attachment.size>20*1024*1024:
-  return await i.response.send_message("Proof must be 20 MiB or smaller.",ephemeral=True)
+  return await notice(i, False, "Proof must be 20 MiB or smaller.",ephemeral=True)
  if not discord_attachment_key(attachment.url):
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Discord did not return a valid proof attachment. Try another file.",ephemeral=True
   )
  pb_date,time_value=parsed
@@ -4354,7 +4356,7 @@ class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
  async def on_submit(self,i):
   selected=self.format_select.values[0]
   if selected not in RAIDS[self.activity]:
-   return await i.response.send_message(
+   return await notice(i, False, 
     "Choose a valid format for this raid.",ephemeral=True
    )
   await submit_modal_details(i,"Raids",self.activity,selected,
@@ -4410,9 +4412,9 @@ class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
   try:
    activity,variant=self.raid_select.values[0].split("|||",1)
   except (IndexError,ValueError):
-   return await i.response.send_message("Choose a raid and format.",ephemeral=True)
+   return await notice(i, False, "Choose a raid and format.",ephemeral=True)
   if activity not in RAIDS or variant not in RAIDS[activity]:
-   return await i.response.send_message("Choose a valid raid format.",ephemeral=True)
+   return await notice(i, False, "Choose a valid raid format.",ephemeral=True)
   await submit_modal_details(i,"Raids",activity,variant,
                              self.details_input,self.members_select,self.proof_upload)
 
@@ -4490,25 +4492,25 @@ class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
   standard=next(iter(self.boss_select.values),None)
   special=next(iter(self.special_boss_select.values),None)
   if bool(standard)==bool(special):
-   return await i.response.send_message(
+   return await notice(i, False, 
     "Select exactly one boss from either dropdown, not both.",ephemeral=True
    )
   if standard:
    if standard not in BOSSES or BOSSES[standard]!=["Standard"]:
-    return await i.response.send_message("Choose a valid standard boss.",ephemeral=True)
+    return await notice(i, False, "Choose a valid standard boss.",ephemeral=True)
    activity,variant=standard,"Standard"
   else:
    try:
     activity,variant=special.split("|||",1)
    except ValueError:
-    return await i.response.send_message("Choose a boss and its format.",ephemeral=True)
+    return await notice(i, False, "Choose a boss and its format.",ephemeral=True)
    if activity in TEAM_BOSS_SIZES:
     if variant not in TEAM_BOSS_SIZES[activity]:
-     return await i.response.send_message(
+     return await notice(i, False, 
       "Choose a valid Nex or Hueycoatl team size.",ephemeral=True
      )
    elif activity not in BOSSES or set(BOSSES[activity])!={"Normal","Awakened"} or variant not in BOSSES[activity]:
-    return await i.response.send_message(
+    return await notice(i, False, 
      "Choose a valid DT2 boss and Normal or Awakened mode.",ephemeral=True
     )
   await submit_modal_details(i,"Bosses",activity,variant,
@@ -4526,24 +4528,24 @@ async def mypbs(i:discord.Interaction):
 async def pbproof(i:discord.Interaction,submission_id:int,url:str="",attachment:discord.Attachment=None):
  r=await store.one("SELECT * FROM submissions WHERE id=? AND guild=?",(submission_id,i.guild_id))
  if not r or (r["submitter"]!=i.user.id and not is_staff(i)):
-  return await i.response.send_message("PB not found or not yours.",ephemeral=True)
+  return await notice(i, False, "PB not found or not yours.",ephemeral=True)
  if r["status"]=="approved" and not is_staff(i):
-  return await i.response.send_message("Ask staff to replace proof for an approved PB.",ephemeral=True)
+  return await notice(i, False, "Ask staff to replace proof for an approved PB.",ephemeral=True)
  if r["status"] not in ("pending","awaiting_proof","approved"):
-  return await i.response.send_message("PB is already resolved.",ephemeral=True)
+  return await notice(i, False, "PB is already resolved.",ephemeral=True)
  proof=attachment.url if attachment else url.strip()
- if not valid_url(proof):return await i.response.send_message("Provide a valid URL or attach an image/video.",ephemeral=True)
+ if not valid_url(proof):return await notice(i, False, "Provide a valid URL or attach an image/video.",ephemeral=True)
  if attachment and not (attachment.content_type or "").startswith(("image/","video/")):
-  return await i.response.send_message("Only image/video files accepted.",ephemeral=True)
+  return await notice(i, False, "Only image/video files accepted.",ephemeral=True)
  if attachment and not discord_attachment_key(proof):
-  return await i.response.send_message("Discord did not return a valid proof attachment URL.",ephemeral=True)
+  return await notice(i, False, "Discord did not return a valid proof attachment URL.",ephemeral=True)
  await save_interaction_proof(i,r,proof)
 
 @bot.tree.command(name="pbclear",description="Clear all Novus Apex PB submissions and leaderboard records")
 @app_commands.guild_only()
 async def pbclear(i:discord.Interaction):
  if not is_council_or_founder(i):
-  return await i.response.send_message("Council or Founder only.",ephemeral=True)
+  return await notice(i, False, "Council or Founder only.",ephemeral=True)
 
  await i.response.defer(ephemeral=True,thinking=True)
  rows=await store.all(
@@ -4567,7 +4569,7 @@ async def pbclear(i:discord.Interaction):
 
  await store.clear_guild(i.guild_id)
  await refresh_panel(i.guild_id)
- await i.followup.send(
+ await notice(i, True, 
   f"Cleared **{len(rows)}** PB submission(s). "
   f"Removed **{deleted_cards}** staff review card(s). "
   "The PB database is back to **0 submissions**.",
@@ -4601,22 +4603,22 @@ async def post_current_pb_board(channel,guild_id):
 @app_commands.default_permissions(manage_guild=True)
 async def pbpost(i:discord.Interaction):
  if not is_staff(i):
-  return await i.response.send_message("Staff only.",ephemeral=True)
+  return await notice(i, False, "Staff only.",ephemeral=True)
  if not i.channel or not hasattr(i.channel,"send"):
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Use this in a text channel where I can post the board.",ephemeral=True
   )
  me=i.guild.me
  perms=i.channel.permissions_for(me) if me else None
  if not perms or not perms.view_channel or not perms.send_messages or not perms.embed_links:
-  return await i.response.send_message(
+  return await notice(i, False, 
    "Novus Apex needs View Channel, Send Messages, and Embed Links here.",
    ephemeral=True
   )
  await i.response.defer(ephemeral=True)
  try:
   main,raids=await post_current_pb_board(i.channel,i.guild_id)
-  await i.followup.send(
+  await notice(i, True, 
    f"Posted **NOVUS Top 10 Overall**: {main.jump_url}\n"
    f"Posted **NOVUS Top 10 Raids**: {raids.jump_url}\n"
    "-# These are snapshots; the main PB leaderboard remains unchanged.",
@@ -4624,13 +4626,13 @@ async def pbpost(i:discord.Interaction):
   )
  except (discord.Forbidden,discord.HTTPException):
   logging.exception("Could not post PB board copy in channel %s",i.channel_id)
-  await i.followup.send(
+  await notice(i, True, 
    "Discord could not post the PB board here. Check Novus Apex permissions and try again.",
    ephemeral=True
   )
  except Exception:
   logging.exception("PB board copy failed in channel %s",i.channel_id)
-  await i.followup.send(
+  await notice(i, True, 
    "Could not post the PB board copy. Check the Novus Apex logs.",
    ephemeral=True
   )
@@ -4727,28 +4729,28 @@ async def rebuild_public_pb_panel(channel,g):
 @app_commands.default_permissions(manage_guild=True)
 async def pbpanel(i:discord.Interaction):
  if not is_staff(i):
-  return await i.response.send_message("Staff only.",ephemeral=True)
+  return await notice(i, False, "Staff only.",ephemeral=True)
  await i.response.defer(ephemeral=True)
  await fetch_activity_emojis(i.guild)
  me=i.guild.me
  perms=i.channel.permissions_for(me) if me else None
  if not perms or not perms.view_channel or not perms.send_messages:
-  return await i.followup.send(
+  return await notice(i, True, 
    "I need View Channel and Send Messages in this channel before I can create the PB panel.",
    ephemeral=True
   )
  try:
   await rebuild_public_pb_panel(i.channel,i.guild_id)
-  await i.followup.send("Refreshed Novus Apex with overall and raids Top 10 posts, directories, and PB leaderboards.",ephemeral=True)
+  await notice(i, True, "Refreshed Novus Apex with overall and raids Top 10 posts, directories, and PB leaderboards.",ephemeral=True)
  except discord.Forbidden:
   logging.exception("PB panel send forbidden in channel %s",i.channel_id)
-  await i.followup.send(
+  await notice(i, True, 
    "Discord blocked the PB board post. Check Novus Apex permissions, then run /pbpanel again.",
    ephemeral=True
   )
  except Exception as exc:
   logging.exception("PB panel creation failed")
-  await i.followup.send(
+  await notice(i, True, 
    f"PB panel creation failed: {type(exc).__name__}. Check Railway logs.",
    ephemeral=True
   )
