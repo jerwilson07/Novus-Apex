@@ -498,7 +498,7 @@ class DiaryCog(commands.Cog):
             eligible=membership.get("tenure_eligible")
             today=datetime.now(ZoneInfo("America/New_York")).date()
             tenure_met=bool(eligible and today>=date.fromisoformat(eligible))
-            checks=[time_status,f"✅ WOM joined: {membership['joined']}",
+            checks=[time_status,f"✅ Current clan stint: {membership['joined']}",
                     "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {eligible}" if eligible else "⚠️ Tenure date unavailable")]
             if any(name not in best.verified for name in best if name!="ToA 300 Solo"):
                 checks.append("⚠️ Review flagged team dates")
