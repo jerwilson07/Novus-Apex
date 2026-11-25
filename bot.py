@@ -307,8 +307,8 @@ NOVUS_PB_TROPHY_IDS={
 }
 PB_PODIUM_NAMES={rank:f"pb{rank}" for rank in PB_PODIUM_FALLBACK}
 PB_FEATURED_HEADING="## "
-PB_TOP10_TITLE="## ✦ NOVUS TOP 10 OVERALL"
-PB_RAIDS_TITLE="## ✦ NOVUS TOP 10 RAIDS"
+PB_TOP10_TITLE="## ✦ NOVUS OVERALL TOP 10"
+PB_RAIDS_TITLE="## ✦ NOVUS RAIDS TOP 10"
 PB_TOP10_PODIUM_HEADING="## "
 PB_PLACEMENT_POINTS=(5,3,1)
 
@@ -1036,7 +1036,7 @@ async def on_ready():
     old_panel=await store.panel(guild.id)
     old_channel=bot.get_channel(old_panel["channel"]) or await bot.fetch_channel(old_panel["channel"])
     await rebuild_public_pb_panel(old_channel,guild.id)
-    logging.info("Created separate NOVUS TOP 10 RAIDS post below the overall leaderboard")
+    logging.info("Created separate NOVUS RAIDS TOP 10 post below the overall leaderboard")
    except Exception:
     logging.exception("Could not migrate existing PB board to separate raids Top 10 post")
     continue
@@ -4610,8 +4610,8 @@ async def pbpost(i:discord.Interaction):
  try:
   main,raids=await post_current_pb_board(i.channel,i.guild_id)
   await notice(i, True, 
-   f"Posted **NOVUS Top 10 Overall**: {main.jump_url}\n"
-   f"Posted **NOVUS Top 10 Raids**: {raids.jump_url}\n"
+   f"Posted **NOVUS Overall Top 10**: {main.jump_url}\n"
+   f"Posted **NOVUS Raids Top 10**: {raids.jump_url}\n"
    "-# These are snapshots; the main PB leaderboard remains unchanged.",
    ephemeral=True
   )
