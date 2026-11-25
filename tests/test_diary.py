@@ -1,0 +1,36 @@
+import unittest
+from datetime import date
+from diary import CHALLENGES, best_candidates, progress, threshold
+
+def row(c, sid=1, **changes):
+    name,group,category,activity,variant,size,times=c
+    data=dict(id=sid,status="approved",proof="proof",reviewer=99,
+        category=category,activity=activity,variant=variant,
+        member_ids=",".join(str(i+1) for i in range(size)),
+        pb_date="2026-11-10",ms=threshold(times[2]))
+    data.update(changes)
+    return data
+
+class DiaryTest(unittest.TestCase):
+    def test_all_tiers_and_all_teammates(self):
+        rows=[row(c,i+1) for i,c in enumerate(CHALLENGES)]
+        best=best_candidates(rows,1,date(2026,11,25))
+        self.assertEqual(len(best),10)
+        self.assertEqual([progress(best,i)[1:] for i in range(3)],[(4,4),(7,7),(10,10)])
+        self.assertIn("ToB Duo",best_candidates(rows,2,date(2026,11,25)))
+        self.assertNotIn("Inferno",best_candidates(rows,2,date(2026,11,25)))
+    def test_group_requirements_not_raw_count(self):
+        best=best_candidates([row(c,i+1) for i,c in enumerate(CHALLENGES[:4])],1,date(2026,11,25))
+        self.assertEqual(progress(best,0)[1:],(1,4))
+        self.assertEqual(progress(best,1)[1:],(2,7))
+    def test_unapproved_bad_dates_and_rosters_excluded(self):
+        rows=[row(CHALLENGES[0],1,status="denied"),row(CHALLENGES[0],2,member_ids="1"),
+              row(CHALLENGES[0],3,pb_date=None),row(CHALLENGES[0],4,proof=None),
+              row(CHALLENGES[0],5,pb_date="2027-01-01"),row(CHALLENGES[0],6,member_ids="1,1")]
+        self.assertEqual(best_candidates(rows,1,date(2026,11,25)),{})
+    def test_threshold_and_best_time(self):
+        c=CHALLENGES[0]
+        rows=[row(c,1,ms=threshold("24:30")),row(c,2,ms=threshold("24:00"))]
+        best=best_candidates(rows,1,date(2026,11,25))
+        self.assertEqual(best[c[0]]["id"],2)
+        self.assertEqual([progress(best,i)[1] for i in range(3)],[1,1,0])
