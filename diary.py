@@ -8,6 +8,7 @@ import asyncio
 import logging
 import json
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands, ui
@@ -221,6 +222,7 @@ class DiaryCog(commands.Cog):
                     return snapshot[1]
                 return None
             self.bridge_checked=now
+            self.bridge_snapshot=None
             guild=self.bot.get_guild(GUILD)
             if not guild:
                 return None
@@ -328,7 +330,7 @@ class DiaryCog(commands.Cog):
             checks=[time_status,"⚠️ WOM membership not verified"]
         else:
             eligible=membership.get("tenure_eligible")
-            today=datetime.now(timezone.utc).date()
+            today=datetime.now(ZoneInfo("America/New_York")).date()
             tenure_met=bool(eligible and today>=date.fromisoformat(eligible))
             checks=[time_status,f"✅ WOM joined: {membership['joined']}",
                     "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {eligible}" if eligible else "⚠️ Tenure date unavailable")]
