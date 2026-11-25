@@ -113,9 +113,10 @@ class DiaryView(ui.View):
         self.add_item(self.refresh)
         if not ticket:
             self.add_item(ui.Button(label="Open PvM Diary Ticket",style=discord.ButtonStyle.link,url=PANEL,row=1))
-        if best:
+        fallback={name:row for name,row in best.items() if not cog.proof_link(row)}
+        if fallback:
             self.proof=ui.Select(placeholder="View original Apex proof",custom_id=f"diary:proof:{member_id}:{tier}",row=2,
-                options=[discord.SelectOption(label=name,value=str(record["id"])) for name,record in best.items()])
+                options=[discord.SelectOption(label=name,value=str(record["id"])) for name,record in fallback.items()])
             self.proof.callback=self.view_proof
             self.add_item(self.proof)
     async def interaction_check(self,i):
@@ -154,8 +155,9 @@ class DiaryView(ui.View):
             pass
 
 class DiaryCog(commands.Cog):
-    def __init__(self,bot,store,fmt,show_proof):
+    def __init__(self,bot,store,fmt,show_proof,proof_link,refresh_proofs):
         self.bot,self.store,self.fmt,self.show_proof=bot,store,fmt,show_proof
+        self.proof_link,self.refresh_proofs=proof_link,refresh_proofs
         self.locks={}
         self.started=None
         self.recovered=False
@@ -169,12 +171,15 @@ class DiaryCog(commands.Cog):
         row=await self.store.one("SELECT value FROM diary_meta WHERE key='preview_started'")
         self.started=datetime.fromisoformat(row["value"])
         for row in await self.store.all("SELECT * FROM diary_ticket_previews"):
-            best=await self.best(row["member"])
+            best=await self.best(row["member"],resolve_links=False)
             self.bot.add_view(DiaryView(self,row["member"],best,row["tier"],ticket=True),message_id=row["message"])
 
-    async def best(self,member_id):
+    async def best(self,member_id,*,resolve_links=True):
         rows=await self.store.approved_for_points(GUILD)
-        return best_candidates(rows,member_id)
+        best=best_candidates(rows,member_id)
+        if resolve_links and best:
+            await self.refresh_proofs(list(best.values()))
+        return best
 
     def embed(self,guild,member_id,best,tier):
         title="Novus Apex | PvM Diary"
@@ -188,15 +193,28 @@ class DiaryCog(commands.Cog):
         e.add_field(name="Progress overview",value="\n".join(summary),inline=False)
         counts,done,total=progress(best,tier)
         e.add_field(name=f"{rank_emoji(guild,tier)}{RANKS[tier]} requirements",value=" • ".join(f"{label} {min(counts[g],n)}/{n}" for label,g,n in zip(GROUP_LABELS,GROUPS,RULES[tier])),inline=False)
-        lines=[]
+        grouped={group:[] for group in GROUPS}
         for name,group,cat,act,var,size,times in CHALLENGES:
             row=best.get(name)
             if not row:
-                lines.append(f"▫️ {name} · — / {times[tier]}")
+                grouped[group].append(f"▫️ {name} · — / {times[tier]}")
             else:
                 mark="✅" if row["ms"]<=threshold(times[tier]) else "▫️"
-                lines.append(f"{mark} {name} · **{self.fmt(row['ms'])}** / {times[tier]} · #{row['id']}")
-        e.add_field(name="Best approved times / targets",value="\n".join(lines),inline=False)
+                link=self.proof_link(row)
+                evidence=link if link else f"Proof #{row['id']}"
+                # Embed fields are limited to 1024 characters, including URL text.
+                if len(evidence)>750:
+                    evidence=f"Proof #{row['id']} (use /pbviewproof)"
+                grouped[group].append(f"{mark} {name} · **{self.fmt(row['ms'])}** / {times[tier]} · {evidence}")
+        for group,label in zip(GROUPS,GROUP_LABELS):
+            batch=[]
+            for line in grouped[group]:
+                if batch and len("\n".join(batch+[line]))>1000:
+                    e.add_field(name=label,value="\n".join(batch),inline=False)
+                    batch=[]
+                batch.append(line)
+            if batch:
+                e.add_field(name=label,value="\n".join(batch),inline=False)
         e.add_field(name="Eligibility",value="Run date must be on/after WOM join date; all teammates must have been clan members on the run date. Three-month tenure required. ToA invocation needs confirmation. Rank approval remains manual during preview.",inline=False)
         e.set_footer(text=f"Novus Apex • Diary preview • {member_id}")
         return e
@@ -303,7 +321,7 @@ class DiaryCog(commands.Cog):
                     logger.exception("Diary ticket recovery failed")
         logger.info("Novus Apex diary preview ready; WOM verification and role awards disabled")
 
-async def install(bot,store,fmt,show_proof):
-    cog=DiaryCog(bot,store,fmt,show_proof)
+async def install(bot,store,fmt,show_proof,proof_link,refresh_proofs):
+    cog=DiaryCog(bot,store,fmt,show_proof,proof_link,refresh_proofs)
     await cog.initialize()
     await bot.add_cog(cog)
