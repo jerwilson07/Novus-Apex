@@ -195,7 +195,7 @@ class DiaryView(ui.View):
         self.refresh.callback=self.refresh_diary
         self.add_item(self.refresh)
         if not ticket:
-            self.add_item(ui.Button(label="Open Review Ticket",style=discord.ButtonStyle.link,url=PANEL,row=1))
+            self.add_item(ui.Button(label="Apply for Rank",style=discord.ButtonStyle.link,url=PANEL,row=1))
         if ticket:
             self.approve=ui.Button(label=f"Grant {RANKS[tier]}",style=discord.ButtonStyle.success,custom_id=f"diary:approve:{member_id}:{tier}",row=1,disabled=not bool(review_plan(best,tier)) or bool(best.award is not None and best.award>=tier))
             self.approve.callback=self.approve_clicked
@@ -232,7 +232,7 @@ class DiaryView(ui.View):
                 best=await self.cog.best(self.member_id)
                 if await self.cog.ticket_applicant(i.channel)!=self.member_id:
                     return await i.followup.send("Ticket ownership could not be confirmed.",ephemeral=True)
-                await i.edit_original_response(embed=self.cog.embed(i.guild,self.member_id,best,tier),view=DiaryView(self.cog,self.member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
+                await i.edit_original_response(embed=self.cog.embed(i.guild,self.member_id,best,tier,ticket=True),view=DiaryView(self.cog,self.member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
                 await self.cog.save_ticket(i.channel_id,self.member_id,i.message.id,tier)
         else:
             best=await self.cog.best(self.member_id)
@@ -379,7 +379,7 @@ class DiaryCog(commands.Cog):
             best=await self.best(member_id)
             if await self.ticket_applicant(ch)!=member_id:
                 return
-            await msg.edit(embed=self.embed(ch.guild,member_id,best,tier),view=DiaryView(self,member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
+            await msg.edit(embed=self.embed(ch.guild,member_id,best,tier,ticket=True),view=DiaryView(self,member_id,best,tier,ticket=True),allowed_mentions=discord.AllowedMentions.none())
             await self.save_ticket(ch.id,member_id,msg.id,tier)
 
     async def approve_rank(self,i,member_id,tier,shown):
@@ -443,11 +443,11 @@ class DiaryCog(commands.Cog):
         await self.update_ticket(i.channel,member_id,tier)
         await i.followup.send(f"✅ {RANKS[tier]} granted.",ephemeral=True)
 
-    def embed(self,guild,member_id,best,tier):
+    def embed(self,guild,member_id,best,tier,*,ticket=False):
         counts,done,total=progress(best,tier)
         e=discord.Embed(
             title="Novus PvM Diary",
-            description=f"**Applicant:** <@{member_id}>\n**Selected Rank:** {rank_emoji(guild,tier)}{RANKS[tier]}",
+            description=f"**{'Applicant' if ticket else 'Member'}:** <@{member_id}>\n**Selected Rank:** {rank_emoji(guild,tier)}{RANKS[tier]}",
             color=COLORS[tier],
         )
         if guild.icon:
@@ -488,7 +488,7 @@ class DiaryCog(commands.Cog):
                 batch.append(line)
             if batch:
                 e.add_field(name=heading,value="\n".join(batch)+"\n\u200b",inline=False)
-        time_status="✅ **Time goals met**" if done==total else f"▫️ **Time goals:** {done}/{total}"
+        time_status=f"{'✅' if done==total else '▫️'} **Challenges completed:** {done}/{total}"
         membership=getattr(best,"membership",None)
         if not getattr(best,"snapshot_available",False):
             checks=[time_status,"WOM sync unavailable • provisional"]
@@ -498,8 +498,8 @@ class DiaryCog(commands.Cog):
             eligible=membership.get("tenure_eligible")
             today=datetime.now(ZoneInfo("America/New_York")).date()
             tenure_met=bool(eligible and today>=date.fromisoformat(eligible))
-            checks=[time_status,f"✅ Current clan stint: {membership['joined']}",
-                    "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {eligible}" if eligible else "⚠️ Tenure date unavailable")]
+            checks=[time_status,f"✅ Current clan stint: {date.fromisoformat(membership['joined']).strftime('%b %d, %Y').replace(' 0', ' ')}",
+                    "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {date.fromisoformat(eligible).strftime('%b %d, %Y').replace(' 0', ' ')}" if eligible else "⚠️ Tenure date unavailable")]
             if any(name not in best.verified for name in best if name!="ToA 300 Solo"):
                 checks.append("⚠️ Review flagged team dates")
         if "ToA 300 Solo" in best and (best.verified is None or "ToA 300 Solo" not in best.verified):
@@ -585,7 +585,7 @@ class DiaryCog(commands.Cog):
             best=await self.best(member)
             if await self.ticket_applicant(ch)!=member:
                 return
-            msg=await ch.send(embed=self.embed(ch.guild,member,best,0),view=DiaryView(self,member,best,ticket=True),allowed_mentions=discord.AllowedMentions.none())
+            msg=await ch.send(embed=self.embed(ch.guild,member,best,0,ticket=True),view=DiaryView(self,member,best,ticket=True),allowed_mentions=discord.AllowedMentions.none())
             await self.save_ticket(ch.id,member,msg.id,0)
             logger.info("Diary preview posted ticket=%s message=%s",ch.id,msg.id)
 
@@ -657,7 +657,7 @@ class DiaryCog(commands.Cog):
                     best=await self.best(current["member"])
                     if await self.ticket_applicant(ch)!=current["member"]:
                         continue
-                    await msg.edit(embed=self.embed(guild,current["member"],best,current["tier"]),view=DiaryView(self,current["member"],best,current["tier"],ticket=True),allowed_mentions=discord.AllowedMentions.none())
+                    await msg.edit(embed=self.embed(guild,current["member"],best,current["tier"],ticket=True),view=DiaryView(self,current["member"],best,current["tier"],ticket=True),allowed_mentions=discord.AllowedMentions.none())
                 await asyncio.sleep(1)
             except discord.NotFound:
                 continue
