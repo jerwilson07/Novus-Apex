@@ -1,6 +1,6 @@
 import unittest
 from datetime import date
-from diary import CHALLENGES, DiaryEvidence, best_candidates, progress, threshold, verified_run, eligible_record, record_fingerprint
+from diary import CHALLENGES, DiaryEvidence, best_candidates, progress, threshold, verified_run, eligible_record, record_fingerprint, review_plan
 
 def row(c, sid=1, **changes):
     name,group,category,activity,variant,size,times=c
@@ -63,3 +63,16 @@ class DiaryTest(unittest.TestCase):
         self.assertNotEqual(record_fingerprint(run),record_fingerprint(dict(run,pb_date="2026-11-12")))
         self.assertNotEqual(record_fingerprint(run),record_fingerprint(dict(run,proof="new-proof")))
         self.assertNotEqual(record_fingerprint(run),record_fingerprint(dict(run,member_ids="1,9")))
+
+    def test_one_click_review_plan_respects_rank_and_join_date(self):
+        rows=[row(c,i+1) for i,c in enumerate(CHALLENGES)]
+        candidates=best_candidates(rows,1,date(2026,11,25))
+        membership={"joined":"2026-11-10","tenure_eligible":"2020-01-01"}
+        evidence=DiaryEvidence(candidates,{},membership,True)
+        for tier,count in enumerate((4,7,10)):
+            self.assertEqual(len(review_plan(evidence,tier)),count)
+        evidence.membership={"joined":"2026-11-11","tenure_eligible":"2020-01-01"}
+        self.assertIsNone(review_plan(evidence,0))
+        evidence.membership={"joined":"2026-11-10","tenure_eligible":"2999-01-01"}
+        self.assertIsNone(review_plan(evidence,0))
+        self.assertIsNone(review_plan(DiaryEvidence(candidates),0))
