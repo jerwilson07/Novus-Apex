@@ -1989,13 +1989,13 @@ def raid_board_page_plan(activity,blocks):
   return [(blocks[0][0],full)] if blocks else [("",full)]
 
  # Every continuation starts at a scale boundary and reuses the same gold
- # cards. Leave room on each nonfinal message for its next-scale jump link.
+ # cards, posted consecutively without inter-page navigation links.
  groups=[]
  current=[]
  for block in blocks:
   show_title=not groups
   candidate=RaidLeaderboard(activity,current+[block],show_title=show_title)
-  if (pb_view_text_units(candidate)<=PB_PUBLIC_TEXT_LIMIT-180
+  if (pb_view_text_units(candidate)<=PB_PUBLIC_TEXT_LIMIT
       and sum(1 for _ in candidate.walk_children())<=39):
    current.append(block)
    continue
@@ -2007,7 +2007,7 @@ def raid_board_page_plan(activity,blocks):
  return [
   (raid_continuation_label(activity,group),linked_board_view(
    RaidLeaderboard,activity,group,show_title=index==0,
-   text_limit=PB_PUBLIC_TEXT_LIMIT-(180 if index<len(groups)-1 else 0),
+   text_limit=PB_PUBLIC_TEXT_LIMIT,
   ))
   for index,group in enumerate(groups)
  ]
@@ -2029,7 +2029,7 @@ def snapshot_page_plan(leaders,recent):
  for extra,with_recent in remain:
   candidate=SnapshotPanel(leaders,recent,activities=raids+extra,
                           show_title=not groups,include_recent=with_recent)
-  if (raids or recent_card) and pb_view_text_units(candidate)>PB_PUBLIC_TEXT_LIMIT-180:
+  if (raids or recent_card) and pb_view_text_units(candidate)>PB_PUBLIC_TEXT_LIMIT:
    groups.append((raids,recent_card))
    raids=[]
   raids=raids+extra
@@ -2044,16 +2044,11 @@ def snapshot_page_plan(leaders,recent):
   view=fit_public_proof_links(
    render,([rows[0] for rows in selected],recent if with_recent else [],
            [r for rows in selected for r in rows[1:]]),"Raid Snapshot",
-   text_limit=PB_PUBLIC_TEXT_LIMIT-(180 if index<len(groups)-1 else 0),
+   text_limit=PB_PUBLIC_TEXT_LIMIT,
   )
   # The Recent PBs card is already directly below the raid entries.
   plan.append((activities[0] if activities else None,view))
  return plan
-
-
-def add_board_page_link(view,label,url):
- if label:
-  view.add_item(ui.TextDisplay(f"### [{clean(label)} ↓]({url})"))
 
 
 async def publish_raid_board_pages(channel,g,activity,message,blocks,mentions):
@@ -2081,8 +2076,6 @@ async def publish_board_pages(channel,g,activity,message,plan,mentions):
   saved.append(existing)
  for i in reversed(range(len(plan))):
   _,view=plan[i]
-  if i<len(plan)-1:
-   add_board_page_link(view,plan[i+1][0],saved[i+1].jump_url)
   if i or message is not None or len(plan)>1:
    saved[i]=await saved[i].edit(view=view,allowed_mentions=mentions,attachments=[])
  for i,page in tracked.items():
@@ -2427,9 +2420,6 @@ async def publish_public_board_tail(channel,g,tail,roots,pages,home):
     msg=await channel.send(view=view,allowed_mentions=mentions,silent=True)
     messages.append(msg)
     staged.append(msg)
-   for i,(_,view) in enumerate(plan[:-1]):
-    add_board_page_link(view,plan[i+1][0],messages[i+1].jump_url)
-    await messages[i].edit(view=view,allowed_mentions=mentions)
    replacements[key]=[msg.id for msg in messages]
   replaced=set(tail)
   superseded={roots[key]["message"] for key in replaced}
