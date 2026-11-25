@@ -6,6 +6,7 @@ No rank is granted by this module.
 """
 import asyncio
 import logging
+import json
 from datetime import date, datetime, timezone
 
 import discord
@@ -13,6 +14,11 @@ from discord import app_commands, ui
 from discord.ext import commands, tasks
 
 GUILD = 1532817291048124466
+SYNC = 1544463223535833148
+BRIDGE_PARENT = 1532825723511767246
+BRIDGE_THREAD = "Apex verification • internal"
+BRIDGE_MARKER = "Novus Sync • Apex membership verification v1"
+BRIDGE_FILENAME = "apex-membership.json"
 CATEGORY = 1560643971623944203
 PANEL = "https://discord.com/channels/1532817291048124466/1533481323883401216/1565518684263293022"
 STAFF = {1532829195657285843, 1532830356875513906, 1532830960062693396, 1533587986204069908}
@@ -73,7 +79,25 @@ def best_candidates(rows, member_id, today=None):
             result[c[0]]=row
     return result
 
+class DiaryEvidence(dict):
+    def __init__(self,candidates,verified=None,membership=None,snapshot_available=False):
+        super().__init__(candidates)
+        self.verified=verified
+        self.membership=membership
+        self.snapshot_available=snapshot_available
+
+def verified_run(row,members):
+    try:
+        run=date.fromisoformat(row["pb_date"])
+        ids=participant_ids(row)
+        return bool(ids and all(str(i) in members and run>=date.fromisoformat(members[str(i)]["joined"]) for i in ids))
+    except (TypeError,ValueError,KeyError):
+        return False
+
 def progress(best,tier):
+    # When the bridge is unavailable, these are provisional time goals only.
+    if getattr(best,"verified",None) is not None:
+        best=best.verified
     counts={k:0 for k in GROUPS}
     for name,group,_,_,_,_,times in CHALLENGES:
         row=best.get(name)
@@ -169,6 +193,9 @@ class DiaryCog(commands.Cog):
         self.locks={}
         self.started=None
         self.recovered=False
+        self.bridge_lock=asyncio.Lock()
+        self.bridge_snapshot=None
+        self.bridge_checked=0.0
 
     def cog_unload(self):
         self.refresh_ticket_cards.cancel()
@@ -185,9 +212,65 @@ class DiaryCog(commands.Cog):
             best=await self.best(row["member"],resolve_links=False)
             self.bot.add_view(DiaryView(self,row["member"],best,row["tier"],ticket=True),message_id=row["message"])
 
+    async def membership_snapshot(self):
+        async with self.bridge_lock:
+            now=asyncio.get_running_loop().time()
+            if now-self.bridge_checked<60:
+                snapshot=self.bridge_snapshot
+                if snapshot and (datetime.now(timezone.utc)-snapshot[0]).total_seconds()<1800:
+                    return snapshot[1]
+                return None
+            self.bridge_checked=now
+            guild=self.bot.get_guild(GUILD)
+            if not guild:
+                return None
+            try:
+                parent=guild.get_channel(BRIDGE_PARENT) or await self.bot.fetch_channel(BRIDGE_PARENT)
+                if not isinstance(parent,discord.TextChannel) or parent.permissions_for(guild.default_role).view_channel:
+                    return None
+                threads=[t for t in await guild.active_threads() if t.parent_id==BRIDGE_PARENT and t.name==BRIDGE_THREAD and t.is_private() and t.owner_id==SYNC]
+                if not threads:
+                    async for t in parent.archived_threads(private=True,joined=True,limit=100):
+                        if t.name==BRIDGE_THREAD and t.owner_id==SYNC:
+                            threads.append(t)
+                if len(threads)!=1:
+                    return None
+                async for msg in threads[0].history(limit=20):
+                    if msg.author.id!=SYNC or msg.content!=BRIDGE_MARKER:
+                        continue
+                    file=next((a for a in msg.attachments if a.filename==BRIDGE_FILENAME and a.size<1000000),None)
+                    if not file:
+                        return None
+                    data=json.loads(await file.read())
+                    generated=datetime.fromisoformat(data["generated"])
+                    age=(datetime.now(timezone.utc)-generated).total_seconds()
+                    members=data["members"]
+                    if data["version"]!=1 or data["guild"]!=GUILD or not isinstance(members,dict) or not 0<=age<1800:
+                        return None
+                    for key,value in members.items():
+                        if not key.isdigit() or not isinstance(value,dict):
+                            return None
+                        date.fromisoformat(value["joined"])
+                        if value.get("tenure_eligible"):
+                            date.fromisoformat(value["tenure_eligible"])
+                    self.bridge_snapshot=(generated,members)
+                    return members
+            except (discord.HTTPException,ValueError,TypeError,KeyError,AttributeError):
+                logger.warning("Diary WOM verification snapshot unavailable")
+            return None
+
     async def best(self,member_id,*,resolve_links=True):
         rows=await self.store.approved_for_points(GUILD)
-        best=best_candidates(rows,member_id)
+        candidates=best_candidates(rows,member_id)
+        snapshot=await self.membership_snapshot() if self.bot.is_ready() else None
+        if snapshot is None:
+            best=DiaryEvidence(candidates)
+        else:
+            # Select the fastest eligible record, not simply the fastest PB.
+            # ToA requires invocation evidence; generic Expert Solo is insufficient.
+            verified=best_candidates([r for r in rows if verified_run(r,snapshot) and r["activity"]!="Tombs of Amascut"],member_id)
+            display={**candidates,**verified}
+            best=DiaryEvidence(display,verified,snapshot.get(str(member_id)),True)
         if resolve_links and best:
             await self.refresh_proofs(list(best.values()))
         return best
@@ -216,7 +299,8 @@ class DiaryCog(commands.Cog):
             if not row:
                 line=f"▫️ {label}: — / {times[tier]}"
             else:
-                mark="✅" if row["ms"]<=threshold(times[tier]) else "❌"
+                verified=getattr(best,"verified",None)
+                mark="⚠️" if verified is not None and name not in verified else ("✅" if row["ms"]<=threshold(times[tier]) else "❌")
                 actual=self.fmt(row["ms"]).removesuffix(".00")
                 evidence=self.proof_link(row) or f"Proof #{row['id']}"
                 if len(evidence)>min(750,link_budget):
@@ -237,9 +321,22 @@ class DiaryCog(commands.Cog):
             if batch:
                 e.add_field(name=heading,value="\n".join(batch)+"\n\u200b",inline=False)
         time_status="✅ **Time goals met**" if done==total else f"▫️ **Time goals:** {done}/{total}"
-        checks=[time_status,"-# Preview • WOM verification pending integration"]
+        membership=getattr(best,"membership",None)
+        if not getattr(best,"snapshot_available",False):
+            checks=[time_status,"WOM sync unavailable • provisional"]
+        elif not membership:
+            checks=[time_status,"⚠️ WOM membership not verified"]
+        else:
+            eligible=membership.get("tenure_eligible")
+            today=datetime.now(timezone.utc).date()
+            tenure_met=bool(eligible and today>=date.fromisoformat(eligible))
+            checks=[time_status,f"✅ WOM joined: {membership['joined']}",
+                    "✅ 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {eligible}" if eligible else "⚠️ Tenure date unavailable")]
+            if any(name not in best.verified for name in best if name!="ToA 300 Solo"):
+                checks.append("⚠️ Some run dates / teams unverified")
         if "ToA 300 Solo" in best:
-            checks.append("ToA invocation: staff confirmation")
+            checks.append("⚠️ ToA invocation not recorded")
+        checks.append("-# Staff rank approval pending")
         e.add_field(name="Diary Status",value="\n".join(checks),inline=False)
         e.set_footer(text="Novus Apex • Diary Preview")
         return e
@@ -353,7 +450,7 @@ class DiaryCog(commands.Cog):
                 except Exception:
                     logger.exception("Diary ticket recovery failed")
         self.refresh_ticket_cards.start()
-        logger.info("Novus Apex diary preview ready; WOM verification and role awards disabled")
+        logger.info("Novus Apex diary ready; WOM bridge enabled, role awards disabled")
 
     @tasks.loop(hours=2)
     async def refresh_ticket_cards(self):
