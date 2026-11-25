@@ -719,7 +719,7 @@ class PB(commands.Bot):
   await store.open()
   # Install diary before syncing application commands.
   from diary import install as install_diary
-  await install_diary(self,store,fmt,show_record_proof)
+  await install_diary(self,store,fmt,show_record_proof,diary_proof_link,refresh_diary_proofs)
   self.add_dynamic_items(BoardProofSelect,BoardProofButton)
   self.add_view(Home())
   self.add_view(BossDirectory())
@@ -3182,6 +3182,26 @@ async def recover_existing_proofs():
     await update_review(updated)
     await asyncio.sleep(1.4)
 
+
+def diary_proof_link(record):
+ proof=record["proof"]
+ if is_private_proof(proof) and proof_link_needs_refresh(PUBLIC_PROOF_URLS.get(proof),datetime.now(timezone.utc).timestamp()):
+  return ""
+ return proof_text(record)
+
+async def refresh_diary_proofs(records):
+ # Same signed image URL and existing proof archive as public Apex boards.
+ # No additional upload when a matching archived attachment already exists.
+ async with PUBLIC_PROOF_LOCK:
+  for record in records:
+   if diary_proof_link(record):
+    continue
+   path=archive_path(DBPATH,record["proof"])
+   if path and path.is_file():
+    try:
+     await cache_proof_from_review(record,path)
+    except (discord.HTTPException,OSError,aiosqlite.Error):
+     logging.exception("Diary proof link unavailable for PB #%s",record["id"])
 
 async def refresh_proof_snapshot(guild_id,*,published=None):
  tracked=await store.snapshot_panel(guild_id)
