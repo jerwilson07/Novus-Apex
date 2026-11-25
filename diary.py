@@ -205,19 +205,16 @@ class DiaryCog(commands.Cog):
         for i,name in enumerate(RANKS):
             _,n,required=progress(best,i)
             summary.append(f"{rank_emoji(guild,i)}**{name}:** {n}/{required}")
-        e.add_field(name="Rank Progress",value="\n".join(summary),inline=False)
-        status=[]
-        for label,g,cap in zip(GROUP_LABELS,GROUPS,RULES[tier]):
-            n=min(counts[g],cap)
-            status.append(f"{'✅' if n==cap else '▫️'} {label} **{n}/{cap}**")
-        e.add_field(name="Required Challenges",value=" • ".join(status[:2])+"\n"+" • ".join(status[2:]),inline=False)
+        # The category headings carry the required counts, avoiding a second
+        # dense summary. A zero-width spacer gives each section breathing room.
+        e.add_field(name="Rank Progress",value="\n".join(summary)+"\n\u200b",inline=False)
         grouped={group:[] for group in GROUPS}
         link_budget=3500
         for name,group,cat,act,var,size,times in CHALLENGES:
             row=best.get(name)
-            label=name.removeprefix("ToB ").removeprefix("CM ") if group in ("tob","cm") else name
+            label=name.removeprefix("ToB ").removeprefix("CM ") if group in ("tob","cm") else ("300 Solo" if group=="toa" else name)
             if not row:
-                line=f"▫️ {label} · — / {times[tier]}"
+                line=f"▫️ {label}: — / {times[tier]}"
             else:
                 mark="✅" if row["ms"]<=threshold(times[tier]) else "❌"
                 actual=self.fmt(row["ms"]).removesuffix(".00")
@@ -226,19 +223,21 @@ class DiaryCog(commands.Cog):
                     evidence=f"Proof #{row['id']}"
                 else:
                     link_budget-=len(evidence)
-                line=f"{mark} {label} · **{actual}** / {times[tier]} · {evidence}"
+                line=f"{mark} {label}: **{actual}**/{times[tier]} {evidence}"
             grouped[group].append(line)
-        for group,label in zip(GROUPS,("Theatre of Blood","CoX Challenge Mode","Tombs of Amascut","Inferno / Colosseum")):
+        for group,label,cap in zip(GROUPS,("Theatre of Blood","CoX Challenge Mode","Tombs of Amascut","Inferno / Colosseum"),RULES[tier]):
+            heading=f"{label}  •  {min(counts[group],cap)}/{cap}"
             batch=[]
             for line in grouped[group]:
                 if batch and len("\n".join(batch+[line]))>1000:
-                    e.add_field(name=label,value="\n".join(batch),inline=False)
+                    e.add_field(name=heading,value="\n".join(batch),inline=False)
+                    heading="\u200b"
                     batch=[]
                 batch.append(line)
             if batch:
-                e.add_field(name=label,value="\n".join(batch),inline=False)
+                e.add_field(name=heading,value="\n".join(batch)+"\n\u200b",inline=False)
         time_status="✅ **Time goals met**" if done==total else f"▫️ **Time goals:** {done}/{total}"
-        checks=[time_status,"WOM eligibility check: not connected yet"]
+        checks=[time_status,"-# Preview • WOM verification pending integration"]
         if "ToA 300 Solo" in best:
             checks.append("ToA invocation: staff confirmation")
         e.add_field(name="Diary Status",value="\n".join(checks),inline=False)
