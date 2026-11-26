@@ -1472,6 +1472,11 @@ class Home(PBLayoutView):
     if names:
      try:
       podium=await asyncio.to_thread(render_podium_animation,leaders,names)
+      guild=bot.get_guild(g)
+      limit=getattr(guild,"filesize_limit",None)
+      if isinstance(limit,int) and len(podium)>limit:
+       logging.warning("Animated podium exceeds guild attachment limit (%s > %s); using static",len(podium),limit)
+       podium=await asyncio.to_thread(render_podium,leaders,names)
      except (OSError,ValueError):
       logging.warning("Podium animation unavailable; using the static image",exc_info=True)
       podium=await asyncio.to_thread(render_podium,leaders,names)
@@ -1538,6 +1543,11 @@ class RaidTop10(PBLayoutView):
     if names:
      try:
       podium=await asyncio.to_thread(render_podium_animation,leaders,names)
+      guild=bot.get_guild(g)
+      limit=getattr(guild,"filesize_limit",None)
+      if isinstance(limit,int) and len(podium)>limit:
+       logging.warning("Animated podium exceeds guild attachment limit (%s > %s); using static",len(podium),limit)
+       podium=await asyncio.to_thread(render_podium,leaders,names)
      except (OSError,ValueError):
       logging.warning("Raid podium animation unavailable; using static",exc_info=True)
       podium=await asyncio.to_thread(render_podium,leaders,names)

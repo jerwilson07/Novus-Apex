@@ -6,6 +6,7 @@ from pathlib import Path
 from math import sin, cos, tau
 
 from PIL import Image, ImageDraw, ImageFont
+import cinematic_podium
 
 
 FILENAME = "novus-live-podium.png"
@@ -44,7 +45,14 @@ def fit_name(draw, name, width, sizes=(33, 30, 27, 24, 21)):
 
 def render_podium(entries, names):
     """Return a PNG from three unambiguously ranked players."""
-    return _render_fields(_label_fields(entries, names))
+    fields = _label_fields(entries, names)
+    if cinematic_podium.available():
+        try:
+            return cinematic_podium.render_static(fields)
+        except (OSError, ValueError):
+            import logging
+            logging.exception('Cinematic static template unavailable; using previous podium')
+    return _render_fields(fields)
 
 
 def _label_fields(entries, names):
@@ -59,7 +67,10 @@ def _label_fields(entries, names):
 
 def render_podium_animation(entries, names):
     """Animate the fixed artwork with live standings on the nameplates."""
-    return _animate_fields(_label_fields(entries, names))
+    fields = _label_fields(entries, names)
+    if cinematic_podium.available():
+        return cinematic_podium.render_animated(fields)
+    return _animate_fields(fields)
 
 
 # These are the common aura anchors and colors from the approved preview.

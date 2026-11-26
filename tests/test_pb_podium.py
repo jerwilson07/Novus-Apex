@@ -18,6 +18,8 @@ EMOJIS = {f"pb{i}": f"<:pb{i}:{123456789123456780+i}>" for i in range(1, 4)}
 class PodiumTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.addCleanup(patch.stopall)
+        # Legacy art remains tested independently after the cinematic asset is installed.
+        patch('cinematic_podium.available', return_value=False).start()
         patch.dict(bot.ACTIVITY_EMOJI_CACHE, {123: EMOJIS}, clear=True).start()
 
     def test_top10_uses_inline_trophies_and_muted_counts(self):
