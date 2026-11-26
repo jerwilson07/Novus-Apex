@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-co
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py proof_archive.py novus_logging.py podium_image.py diary.py ./
+COPY bot.py proof_archive.py novus_logging.py podium_image.py cinematic_podium.py diary.py ./
 COPY assets/ ./assets/
 
 CMD ["python", "bot.py"]
