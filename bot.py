@@ -1318,7 +1318,7 @@ def is_council_or_founder(i):
  allowed={"council","founder"}
  return any(role.name.casefold() in allowed for role in i.user.roles)
 
-class RulesModal(LoggedModal,title="NOVUS | PB Rules"):
+class RulesModal(LoggedModal,title="✦ NOVUS | PB Rules"):
  def __init__(self):
   super().__init__(timeout=300)
   self.add_item(ui.TextDisplay(
@@ -4117,7 +4117,7 @@ async def decide(i,sid,choice,verified_date=None):
    await user.send(f"Your Novus Apex submission #{sid} needs proof. Use /pbproof with submission_id {sid} in the Novus server.")
   except discord.HTTPException:logging.warning("Unable to DM submission owner")
 
-class ApprovePBDateModal(LoggedModal,title="NOVUS | Verify PB Date"):
+class ApprovePBDateModal(LoggedModal,title="✦ NOVUS | Verify PB Date"):
  def __init__(self,sid):
   super().__init__(timeout=300)
   self.sid=sid
@@ -4136,7 +4136,7 @@ class ApprovePBDateModal(LoggedModal,title="NOVUS | Verify PB Date"):
   await decide(i,self.sid,"approve",verified_date=self.verified_date.value)
 
 
-class ProofUploadModal(LoggedModal,title="NOVUS | PB Proof"):
+class ProofUploadModal(LoggedModal,title="✦ NOVUS | PB Proof"):
  def __init__(self,sid):
   super().__init__(timeout=300)
   self.sid=sid
@@ -4308,13 +4308,13 @@ def pb_proof_field():
  )
 
 
-class RaidSubmitModal(LoggedModal,title="NOVUS | Raid PB Submission"):
+class RaidSubmitModal(LoggedModal,title="✦ NOVUS | Raid PB Submission"):
  def __init__(self,activity):
   if activity not in RAIDS:
    raise ValueError("Unknown raid")
   super().__init__(timeout=300)
   self.activity=activity
-  self.title=f"NOVUS | {RAID_LABELS[activity]} PB"
+  self.title=f"✦ NOVUS | {RAID_LABELS[activity]} PB"
   self.format_select=ui.Select(
    placeholder="Choose mode / team size",
    options=[discord.SelectOption(label=mode,value=mode) for mode in RAIDS[activity]],
@@ -4365,7 +4365,7 @@ def all_raid_submission_options():
  ]
 
 
-class AllRaidSubmitModal(LoggedModal,title="NOVUS | Submit Raid PB"):
+class AllRaidSubmitModal(LoggedModal,title="✦ NOVUS | Submit Raid PB"):
  """Open all raid and format choices directly from the public submit button."""
  def __init__(self):
   super().__init__(timeout=300)
@@ -4434,7 +4434,7 @@ def special_boss_submission_options():
  return choices
 
 
-class BossSubmitModal(LoggedModal,title="NOVUS | Submit Boss PB"):
+class BossSubmitModal(LoggedModal,title="✦ NOVUS | Submit Boss PB"):
  """Five modal fields: two boss dropdowns, PB time, party and optional proof."""
  def __init__(self):
   super().__init__(timeout=300)
