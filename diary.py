@@ -335,6 +335,8 @@ class DiaryCog(commands.Cog):
                         if not key.isdigit() or not isinstance(value,dict):
                             return None
                         date.fromisoformat(value["joined"])
+                        if value.get("effective_joined"):
+                            date.fromisoformat(value["effective_joined"])
                         if value.get("tenure_eligible"):
                             date.fromisoformat(value["tenure_eligible"])
                     self.bridge_snapshot=(generated,members)
@@ -499,7 +501,9 @@ class DiaryCog(commands.Cog):
             eligible=membership.get("tenure_eligible")
             today=datetime.now(ZoneInfo("America/New_York")).date()
             tenure_met=bool(eligible and today>=date.fromisoformat(eligible))
-            checks=[time_status,f"{check()} Current clan stint: {date.fromisoformat(membership['joined']).strftime('%b %d, %Y').replace(' 0', ' ')}",
+            effective=membership.get("effective_joined")
+            tenure_start=(f"{check()} Clan tenure since: {date.fromisoformat(effective).strftime('%b %d, %Y').replace(' 0', ' ')}" if effective else "▫️ Clan tenure start unavailable")
+            checks=[time_status,tenure_start,
                     f"{check()} 3-month tenure met" if tenure_met else (f"▫️ Tenure eligible: {date.fromisoformat(eligible).strftime('%b %d, %Y').replace(' 0', ' ')}" if eligible else "⚠️ Tenure date unavailable")]
             if any(name not in best.verified for name in best if name!="ToA 300 Solo"):
                 checks.append("⚠️ Review flagged team dates")
