@@ -449,7 +449,7 @@ class DiaryCog(commands.Cog):
     def embed(self,guild,member_id,best,tier,*,ticket=False):
         counts,done,total=progress(best,tier)
         e=discord.Embed(
-            title="Novus PvM Diary",
+            title="✦ Novus PvM Diary",
             description=f"**{'Applicant' if ticket else 'Member'}:** <@{member_id}>\n**Selected Rank:** {rank_emoji(guild,tier)}{RANKS[tier]}",
             color=COLORS[tier],
         )
