@@ -12,7 +12,7 @@ import struct
 from PIL import Image, ImageDraw, ImageFont
 
 ASSET = Path(__file__).parent / 'assets' / 'podium' / 'cinematic-stage.webp'
-ASSET_SHA256 = '749a18743f4a19c2f9a5ec5713a0295105dd5f89d9a9b6e722806768297ef0de'
+ASSET_SHA256 = '35ed833292369284de9e93a7a9d6e757f3c9940f2b8bd788d19b66bde28576bc'
 SIZE = (1672, 941)
 FRAME_COUNT = 320
 FRAME_MS = 25
