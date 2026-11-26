@@ -240,10 +240,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(bot.PUBLIC_PROOF_URLS, {ref: url}, clear=True):
             pages = bot.raid_board_page_plan(activity, blocks)
         self.assertGreater(len(pages), 1)
-        for index, (label, view) in enumerate(pages):
-            if index + 1 < len(pages):
-                bot.add_board_page_link(view, pages[index + 1][0],
-                                        "https://discord.com/channels/123/456/789")
+        for _, view in pages:
             self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
             self.assertLessEqual(len(list(view.walk_children())), 40)
         text = "\n".join(item.content for _, view in pages for item in view.walk_children()
@@ -253,6 +250,7 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.count(f"## {activity}"), 1)
         self.assertNotIn(" · PB #", text)
         self.assertNotIn("Empty", text)
+        self.assertNotIn(" ↓](", text)
 
     async def test_raid_pages_keep_main_jump_target_and_reuse_existing_continuation(self):
         activity = "The Fractured Archive"
@@ -354,17 +352,14 @@ class ProofArchiveTests(unittest.IsolatedAsyncioTestCase):
         recent = [record(id=20 + k, proof=proof) for k in range(3)]
         pages = bot.snapshot_page_plan(leaders, recent)
         self.assertGreater(len(pages), 1)
-        for i, (_, view) in enumerate(pages):
-            if i + 1 < len(pages):
-                bot.add_board_page_link(view, pages[i + 1][0],
-                                        "https://discord.com/channels/123/456/789")
+        for _, view in pages:
             self.assertLessEqual(bot.pb_view_text_units(view), bot.PB_PUBLIC_TEXT_LIMIT)
         text = "\n".join(item.content for _, view in pages for item in view.walk_children()
                          if isinstance(item, bot.ui.TextDisplay))
         self.assertEqual(text.count(f"[Proof]({proof})"), 15)
         self.assertEqual(text.count("### RAID SNAPSHOT"), 1)
         self.assertEqual(text.count("### RECENT PBs"), 1)
-        self.assertNotIn("[Recent PBs ↓]", text)
+        self.assertNotIn(" ↓](", text)
         self.assertNotIn(" · PB #", text)
 
     async def test_large_board_splits_menus_and_dispatches_real_selected_value(self):
