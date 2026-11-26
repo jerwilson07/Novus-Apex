@@ -384,7 +384,7 @@ def parse_ms(s):
  else:
   parts=raw.split(":")
  if len(parts) not in (2,3) or any(not x.isdecimal() for x in parts[:-1]):
-  raise ValueError("Use SS.ss, MM:SS.ss, or HH:MM:SS.ss.")
+  raise ValueError("Use MM:SS.ss, SS.ss, or HH:MM:SS.ss.")
  if not re.fullmatch(r"\d{1,2}(?:\.\d{1,3})?",parts[-1]):
   raise ValueError("Invalid seconds.")
  secs,*fraction=parts[-1].split(".")
@@ -4266,7 +4266,7 @@ async def submit_modal_details(i,category,activity,variant,details_input,members
  parsed=parse_submission_details(details_input.value)
  if not parsed:
   return await notice(i, False, 
-   "Use **SS.ss or MM:SS.ss**. The run date must be visible in your proof.",
+   "Use **MM:SS.ss or SS.ss**. The run date must be visible in your proof.",
    ephemeral=True
   )
  attachment=next(iter(proof_upload.values),None)
@@ -4330,7 +4330,7 @@ class RaidSubmitModal(LoggedModal,title="✦ NOVUS | Raid PB Submission"):
   ))
   self.add_item(ui.Label(
    text="PB time",
-   description="Use SS.ss or MM:SS.ss. The run date must appear in your proof.",
+   description="Use MM:SS.ss or SS.ss. The run date must appear in your proof.",
    component=self.details_input
   ))
   self.add_item(ui.Label(
@@ -4385,7 +4385,7 @@ class AllRaidSubmitModal(LoggedModal,title="✦ NOVUS | Submit Raid PB"):
   ))
   self.add_item(ui.Label(
    text="PB time",
-   description="Use SS.ss or MM:SS.ss. The date must appear in the proof.",
+   description="Use MM:SS.ss or SS.ss. The date must appear in the proof.",
    component=self.details_input
   ))
   self.add_item(ui.Label(
@@ -4465,7 +4465,7 @@ class BossSubmitModal(LoggedModal,title="✦ NOVUS | Submit Boss PB"):
   ))
   self.add_item(ui.Label(
    text="PB time",
-   description="Use SS.ss or MM:SS.ss. The date must appear in the proof.",
+   description="Use MM:SS.ss or SS.ss. The date must appear in the proof.",
    component=self.details_input
   ))
   self.add_item(ui.Label(
