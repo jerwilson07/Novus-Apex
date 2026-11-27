@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ASSET = Path(__file__).parent / 'assets' / 'podium' / 'cinematic-stage.webp'
 ASSET_SHA256 = 'ae484d4113a88217a8eadfd444bf4a2195cca363a5efcbba011ec15ff341d423'
+ALIGNED_SHA256 = '6562c04b2514e857d830822a9f5498bb2cdf621962c6ec0644d22d20fb089402'
 SIZE = (1672, 941)
 FRAME_COUNT = 320
 FRAME_MS = 25
@@ -22,6 +23,20 @@ PLATES = (
     (388, 559, 598, 278, '#c7e6ff', ((320, 640, 64), (416, 640, 46), (506, 640, 46))),
     (1275, 559, 598, 280, '#ffd495', ((1200, 640, 48), (1303, 640, 48), (1398, 640, 48))),
 )
+
+# Native 1672x941 coordinates; all three rows share the same 101px pitch.
+ALIGNED_PLATES = (
+    (842, 481, 520, 345, 574, '#ffd495'),
+    (394, 567, 606, 282, 649, '#c7e6ff'),
+    (1294, 567, 606, 284, 649, '#ffd495'),
+)
+PLACEMENT_OFFSETS = (-101, 0, 101)
+# Left edges adjusted for the differing original helmet silhouettes.
+COUNT_OFFSETS = (-4, -10, -9)
+
+@lru_cache(maxsize=1)
+def _aligned_asset():
+    return sha256(ASSET.read_bytes()).hexdigest() == ALIGNED_SHA256
 
 def available():
     return ASSET.is_file()
@@ -34,7 +49,9 @@ def _xy(x, y):
     return round(x * SIZE[0] / 1648), round(y * SIZE[1] / 928)
 
 def _text(draw, pos, label, width, size, color):
-    width = round(width * SIZE[0] / 1648)
+    _native_text(draw, _xy(*pos), label, round(width * SIZE[0] / 1648), size, color)
+
+def _native_text(draw, pos, label, width, size, color, anchor='mm'):
     label = ' '.join(str(label).split())
     while size > 13 and draw.textlength(label, font=_font(size)) > width:
         size -= 1
@@ -43,7 +60,7 @@ def _text(draw, pos, label, width, size, color):
         while label and draw.textlength(label + '…', font=face) > width:
             label = label[:-1]
         label += '…'
-    draw.text(_xy(*pos), label, font=face, fill=color, anchor='mm')
+    draw.text(pos, label, font=face, fill=color, anchor=anchor)
 
 def _chunks(data):
     if data[:4] != b'RIFF' or data[8:12] != b'WEBP' or int.from_bytes(data[4:8], 'little') + 8 != len(data):
@@ -65,7 +82,7 @@ def _chunk(tag, data):
 @lru_cache(maxsize=1)
 def _stage():
     data = ASSET.read_bytes()
-    if sha256(data).hexdigest() != ASSET_SHA256:
+    if sha256(data).hexdigest() not in (ASSET_SHA256, ALIGNED_SHA256):
         raise ValueError('Cinematic stage checksum does not match the approved template')
     chunks = tuple(_chunks(data))
     frames = [p for t, p, _ in chunks if t == b'ANMF']
@@ -84,6 +101,13 @@ def _labeled_still(fields):
     draw = ImageDraw.Draw(image)
     if len(fields) != 3:
         raise ValueError('Three distinct placements are required')
+    if _aligned_asset():
+        for (name, points, counts), (x, ny, py, width, cy, accent) in zip(fields, ALIGNED_PLATES):
+            _native_text(draw, (x, ny), name, width, 34, '#f8f4ff')
+            _native_text(draw, (x, py), f'{points} PTS', width, 29, accent)
+            for count, offset, shift in zip(counts, PLACEMENT_OFFSETS, COUNT_OFFSETS):
+                _native_text(draw, (x + offset + shift, cy), f'×{count}', 55, 26, '#ffd495', 'lm')
+        return image
     for (name, points, counts), (x, name_y, points_y, width, accent, slots) in zip(fields, PLATES):
         _text(draw, (x, name_y), name, width, 34, '#f8f4ff')
         _text(draw, (x, points_y), f'{points} PTS', width, 29, accent)
