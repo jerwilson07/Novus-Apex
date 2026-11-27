@@ -167,7 +167,7 @@ def progress(best,tier):
 
 def member_role(member):
     names={role.name.strip().casefold() for role in getattr(member,"roles",())}
-    return not member.bot and "member" in names and not names.intersection({"guest","clan friend"})
+    return not member.bot and "member" in names and "clan friend" not in names
 
 def staff(member):
     return isinstance(member,discord.Member) and (bool(STAFF.intersection(r.id for r in member.roles)) or member.guild_permissions.administrator)
